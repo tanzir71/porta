@@ -1,0 +1,4 @@
+[env]
+# Tauri's Windows test binaries need this until their common-controls manifest
+# is linked into test artifacts: https://github.com/tauri-apps/tauri/issues/13419
+__TAURI_WORKSPACE__ = "true"
