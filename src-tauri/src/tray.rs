@@ -210,7 +210,7 @@ fn open_folder_sheet<R: Runtime>(app: &AppHandle<R>) {
     ));
 }
 
-fn show_main_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+pub(crate) fn show_main_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "Porta couldn't find its main window. Quit and reopen Porta.".to_owned())?;

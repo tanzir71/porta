@@ -183,7 +183,7 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 - [x] `launchAtLogin` via tauri-plugin-autostart verified in System Settings › Login Items
 - [x] `autoStartShares` on launch (only when master switch on)
 - [x] Native drag-drop wired to the three `porta:*` CustomEvents; dropping a real folder from Finder opens the create sheet with the correct absolute path
-- [ ] Single-instance plugin: second launch focuses existing window
+- [x] Single-instance plugin: second launch focuses existing window
 - [ ] Verify: log out/in → Porta running in menu bar, auto-start shares live, links work
 
 ### M6 — Polish & hardening
