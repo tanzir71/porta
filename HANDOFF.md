@@ -191,7 +191,7 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 - [x] Share names sanitized in listing.html (HTML-escape everything server-rendered)
 - [x] App icon (folder+beam motif matching `Logo` in `Icons.tsx`), 1024px master, iconset generated
 - [x] `cargo tauri build` produces signed-or-ad-hoc .dmg that launches on a clean machine
-- [ ] README.md: what it is, screenshot placeholder, honest security note (public-but-unguessable URLs, password option, Cloudflare ToS: not for production hosting)
+- [x] README.md: what it is, screenshot placeholder, honest security note (public-but-unguessable URLs, password option, Cloudflare ToS: not for production hosting)
 - [ ] Full QA pass: §9 checklist all green
 
 ### M7 — Release
