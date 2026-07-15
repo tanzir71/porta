@@ -195,7 +195,7 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 - [~] Full QA pass: §9 checklist all green
 
 ### M7 — Release
-- [ ] Version 1.0.0 tagged; CHANGELOG.md written
+- [x] Version 1.0.0 tagged; CHANGELOG.md written
 - [ ] .dmg < 25 MB (cloudflared included)
 - [ ] Zero clippy warnings, zero TS errors (`npm run build`), zero orphan processes after 10 start/stop cycles (scripted)
 

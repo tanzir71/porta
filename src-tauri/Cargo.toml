@@ -1,6 +1,6 @@
 [package]
 name = "porta"
-version = "0.1.0"
+version = "1.0.0"
 description = "A UI-first tunneling app for macOS"
 authors = ["Porta contributors"]
 edition = "2021"
