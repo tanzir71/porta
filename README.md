@@ -40,7 +40,7 @@ Quick Tunnels remains subject to the
 ## Install
 
 Porta 1.0 currently targets Apple silicon Macs. Download
-[`Porta_1.0.0_aarch64.dmg`](../../releases/latest/download/Porta_1.0.0_aarch64.dmg),
+[`Porta_1.0.0_aarch64.dmg`](https://github.com/tanzir71/porta/releases/latest/download/Porta_1.0.0_aarch64.dmg),
 open it, and drag Porta to Applications.
 
 The official 1.0 release is ad-hoc signed and has not been notarized by Apple,
@@ -52,7 +52,7 @@ so macOS will likely block the first launch:
 
 Apple makes **Open Anyway** available for about an hour after the blocked
 launch. Only override Gatekeeper when the DMG came from Porta's
-[official GitHub Release](../../releases/latest) and this SHA-256 matches:
+[official GitHub Release](https://github.com/tanzir71/porta/releases/latest) and this SHA-256 matches:
 
 ```text
 d76ba419489c0b3b434b4a28eb6171cfcbb4ad1394f8d98bcb779eb2fcac2257
