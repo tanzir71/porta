@@ -1,9 +1,9 @@
 # Porta
 
-Porta is a free, macOS-first app for sharing a folder or local web server with
-a public HTTPS link. Pick or drag in a folder, and Porta serves it through a
+Porta is a free desktop app for sharing a folder or local web server with a
+public HTTPS link. Pick or drag in a folder, and Porta serves it through a
 Cloudflare Quick Tunnel without an account, a terminal command, or a hosted
-Porta service.
+Porta service. Porta supports Windows 10/11 x64 and Apple-silicon macOS.
 
 ![Porta — Share a folder. Get a link.](site/assets/og.png)
 
@@ -12,9 +12,9 @@ Porta service.
 - Shares folders with browsable directory pages, downloads, and optional uploads.
 - Forwards a public URL to an existing service on a local port.
 - Adds optional password protection, request/visitor stats, and first-visitor notifications.
-- Copies new links automatically and keeps active shares running from the menu bar.
+- Copies new links automatically and keeps active shares running from the system tray.
 - Can launch at login and restart selected shares automatically.
-- Stores share settings locally and passwords in the macOS Keychain.
+- Stores share settings locally and passwords in the operating system credential store.
 
 Porta bundles `cloudflared`; users do not need to install it separately or
 create a Cloudflare account. Porta has no analytics or telemetry.
@@ -39,53 +39,60 @@ Quick Tunnels remains subject to the
 
 ## Install
 
-Porta 1.0 currently targets Apple silicon Macs. Download
-[`Porta_1.0.0_aarch64.dmg`](https://github.com/tanzir71/porta/releases/latest/download/Porta_1.0.0_aarch64.dmg),
-open it, and drag Porta to Applications.
+Download Porta only from the
+[official GitHub Release](https://github.com/tanzir71/porta/releases/latest),
+then verify the matching `.sha256` attachment before overriding an operating
+system warning.
 
-The official 1.0 release is ad-hoc signed and has not been notarized by Apple,
-so macOS will likely block the first launch:
+### Windows 10/11 x64
+
+Download
+[`Porta_1.1.0_x64-setup.exe`](https://github.com/tanzir71/porta/releases/latest/download/Porta_1.1.0_x64-setup.exe)
+and run it. The installer is unsigned, so Microsoft Defender SmartScreen may
+show **Windows protected your PC**. Select **More info**, confirm the installer
+came from this repository, then select **Run anyway**. Porta installs for the
+current user without administrator access.
+
+### Apple-silicon macOS
+
+Download
+[`Porta_1.1.0_aarch64.dmg`](https://github.com/tanzir71/porta/releases/latest/download/Porta_1.1.0_aarch64.dmg),
+open it, and drag Porta to Applications. The app is ad-hoc signed and not
+notarized, so macOS will likely block its first launch:
 
 1. Try opening Porta once, then dismiss the warning.
 2. Open **System Settings → Privacy & Security** and scroll to **Security**.
 3. Click **Open Anyway**, enter your login password, then confirm **Open**.
 
 Apple makes **Open Anyway** available for about an hour after the blocked
-launch. Only override Gatekeeper when the DMG came from Porta's
-[official GitHub Release](https://github.com/tanzir71/porta/releases/latest) and this SHA-256 matches:
-
-```text
-d76ba419489c0b3b434b4a28eb6171cfcbb4ad1394f8d98bcb779eb2fcac2257
-```
-
-See [Apple's official instructions](https://support.apple.com/guide/mac-help/open-an-app-by-overriding-security-settings-mh40617/mac).
+launch. See [Apple's official instructions](https://support.apple.com/guide/mac-help/open-an-app-by-overriding-security-settings-mh40617/mac).
 
 Then drag a folder into Porta or choose **Share a folder**, review the share
 options, and use the copied `trycloudflare.com` link. Closing the window hides
-it; choose **Quit Porta** from the menu bar to stop the resident app and its
-active tunnels.
+it; choose **Quit Porta** from the Windows notification area or macOS menu bar
+to stop the resident app and its active tunnels.
 
 ## Build from source
 
-Prerequisites are the current stable Rust toolchain, Node.js with npm, and both
-macOS `cloudflared` binaries described in
+Prerequisites are the current stable Rust toolchain, Node.js with npm, and the
+target platform's `cloudflared` binary described in
 [`src-tauri/binaries/README.md`](src-tauri/binaries/README.md).
 
 ```sh
 npm --prefix ui install
-cd src-tauri
 cargo tauri build
 ```
 
-For development, run `cargo tauri dev` from `src-tauri`. To verify both halves
-without opening the app:
+Run `cargo tauri dev` from the repository root for development. Windows
+installers are built on Windows CI; macOS builds use the matching
+Apple-silicon target. To verify the shared code without opening the app:
 
 ```sh
+npm --prefix ui run test
 npm --prefix ui run build
-cd src-tauri
-cargo test
-cargo clippy --all-targets -- -D warnings
-cargo fmt --check
+cargo test --manifest-path src-tauri/Cargo.toml
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo fmt --manifest-path src-tauri/Cargo.toml --check
 ```
 
 ## Architecture
@@ -94,4 +101,5 @@ Porta is a Tauri 2 application with a React/TypeScript interface and a Rust
 backend. Folder shares are served from a loopback-only Axum server, and the
 bundled `cloudflared` sidecar connects that server—or a selected local port—to
 Cloudflare's edge. Share state is stored atomically in the app-data directory;
-passwords are kept out of that file and stored in Keychain.
+passwords are kept out of that file and stored in Keychain on macOS or
+Credential Manager on Windows.

@@ -1,5 +1,6 @@
 import React from "react";
 import type { Settings } from "../lib/ipc";
+import { isWindows } from "../lib/platform";
 
 export interface SettingsSheetProps {
   settings: Settings;
@@ -25,7 +26,7 @@ const Row = ({ title, desc, checked, onToggle }: RowProps) => (
   </div>
 );
 
-export function SettingsSheet({ settings, onChange, onClose, version = "1.0.0" }: SettingsSheetProps) {
+export function SettingsSheet({ settings, onChange, onClose, version = "1.1.0" }: SettingsSheetProps) {
   return (
     <div className="sheet-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="sheet" role="dialog" aria-modal="true" aria-label="Settings">
@@ -35,7 +36,9 @@ export function SettingsSheet({ settings, onChange, onClose, version = "1.0.0" }
         <div className="section-label">Startup</div>
         <Row
           title="Launch Porta at login"
-          desc="Porta opens quietly in the menu bar when you sign in."
+          desc={isWindows
+            ? "Porta opens quietly in the notification area when you sign in."
+            : "Porta opens quietly in the menu bar when you sign in."}
           checked={settings.launchAtLogin}
           onToggle={() => onChange({ launchAtLogin: !settings.launchAtLogin })}
         />
@@ -46,8 +49,10 @@ export function SettingsSheet({ settings, onChange, onClose, version = "1.0.0" }
           onToggle={() => onChange({ autoStartShares: !settings.autoStartShares })}
         />
         <Row
-          title="Show Dock icon"
-          desc="Off = Porta lives in the menu bar only."
+          title={isWindows ? "Show taskbar icon" : "Show Dock icon"}
+          desc={isWindows
+            ? "Off = Porta lives in the notification area only."
+            : "Off = Porta lives in the menu bar only."}
           checked={settings.showDockIcon}
           onToggle={() => onChange({ showDockIcon: !settings.showDockIcon })}
         />
@@ -70,7 +75,7 @@ export function SettingsSheet({ settings, onChange, onClose, version = "1.0.0" }
         <div className="opt-row">
           <div>
             <div className="o-title">Theme</div>
-            <div className="o-desc">Follows macOS by default.</div>
+            <div className="o-desc">Follows your system by default.</div>
           </div>
           <select
             className="select"

@@ -31,7 +31,13 @@ const START_ERROR: &str =
     "Porta couldn't start a local server. Quit and reopen Porta, then try again.";
 const STOP_ERROR: &str =
     "Porta couldn't stop the local server cleanly. Quit Porta before sharing it again.";
+
+#[cfg(target_os = "windows")]
+const MISSING_PASSWORD: &str = "Porta couldn't find this share's password in Credential Manager. Edit the share, set the password again, then try again.";
+#[cfg(target_os = "macos")]
 const MISSING_PASSWORD: &str = "Porta couldn't find this share's password in Keychain. Edit the share, set the password again, then try again.";
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+const MISSING_PASSWORD: &str = "Porta couldn't find this share's password in your credential store. Edit the share, set the password again, then try again.";
 const MAX_UPLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const LISTING_TEMPLATE: &str = include_str!("../../server-templates/listing.html");
 const LISTING_DISABLED_PAGE: &str = r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Folder browsing is off</title></head><body><main><h1>Folder browsing is off</h1><p>Ask the person sharing this folder for a direct link to a file.</p></main></body></html>"#;
@@ -61,7 +67,7 @@ impl FileServerConfig {
         }
     }
 
-    /// Builds a configuration for a persisted share, reading its password from Keychain.
+    /// Builds a configuration for a persisted share, reading its password from the OS credential store.
     pub fn for_share(share: &Share) -> Result<Self, String> {
         let root = share.path.clone().ok_or_else(|| {
             "This folder share has no folder. Edit the share and pick it again.".to_owned()
@@ -750,6 +756,7 @@ mod tests {
     use std::{
         collections::HashMap,
         net::SocketAddr,
+        path::Path,
         sync::{
             atomic::{AtomicUsize, Ordering},
             Arc,
@@ -840,6 +847,28 @@ mod tests {
         body.extend_from_slice(contents);
         body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
         body
+    }
+
+    #[cfg(unix)]
+    fn create_escape_symlink(target: &Path, link: &Path) -> bool {
+        std::os::unix::fs::symlink(target, link).expect("escape symlink should be created");
+        true
+    }
+
+    #[cfg(windows)]
+    fn create_escape_symlink(target: &Path, link: &Path) -> bool {
+        match std::os::windows::fs::symlink_file(target, link) {
+            Ok(()) => true,
+            // Some Windows CI images do not grant the symlink privilege. Raw and encoded
+            // traversal remain covered below, while a real Windows acceptance pass covers links.
+            Err(error) if error.raw_os_error() == Some(1314) => false,
+            Err(error) => panic!("escape symlink should be created: {error}"),
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn create_escape_symlink(_target: &Path, _link: &Path) -> bool {
+        false
     }
 
     #[tokio::test]
@@ -1200,8 +1229,7 @@ mod tests {
         tokio::fs::write(&secret, b"must not escape")
             .await
             .expect("outside file should be written");
-        std::os::unix::fs::symlink(&secret, root.path().join("escape.txt"))
-            .expect("escape symlink should be created");
+        let has_escape_symlink = create_escape_symlink(&secret, &root.path().join("escape.txt"));
 
         let server = FileServer::start(FileServerConfig::new(root.path(), "Safe files"))
             .await
@@ -1214,33 +1242,38 @@ mod tests {
         assert_eq!(raw.status, 404);
         let encoded = request(server.address(), "/a/%2e%2e/%2e%2e/etc/passwd", &[]).await;
         assert_eq!(encoded.status, 404);
-        let symlink = request(server.address(), "/escape.txt", &[]).await;
-        assert_eq!(symlink.status, 404);
-        assert_ne!(symlink.body, b"must not escape");
+        if has_escape_symlink {
+            let symlink = request(server.address(), "/escape.txt", &[]).await;
+            assert_eq!(symlink.status, 404);
+            assert_ne!(symlink.body, b"must not escape");
+        }
 
-        let curl_url = format!("http://{}/a/../../etc/passwd", server.address());
-        let curl = tokio::task::spawn_blocking(move || {
-            std::process::Command::new("curl")
-                .args([
-                    "--silent",
-                    "--output",
-                    "/dev/null",
-                    "--write-out",
-                    "%{http_code}",
-                    "--path-as-is",
-                    "--max-time",
-                    "5",
-                    "--noproxy",
-                    "*",
-                    &curl_url,
-                ])
-                .output()
-        })
-        .await
-        .expect("curl verification task should finish")
-        .expect("curl should be available on macOS");
-        assert!(curl.status.success());
-        assert_eq!(curl.stdout, b"404");
+        #[cfg(unix)]
+        {
+            let curl_url = format!("http://{}/a/../../etc/passwd", server.address());
+            let curl = tokio::task::spawn_blocking(move || {
+                std::process::Command::new("curl")
+                    .args([
+                        "--silent",
+                        "--output",
+                        "/dev/null",
+                        "--write-out",
+                        "%{http_code}",
+                        "--path-as-is",
+                        "--max-time",
+                        "5",
+                        "--noproxy",
+                        "*",
+                        &curl_url,
+                    ])
+                    .output()
+            })
+            .await
+            .expect("curl verification task should finish")
+            .expect("curl should be available on macOS");
+            assert!(curl.status.success());
+            assert_eq!(curl.stdout, b"404");
+        }
 
         server.stop().await.expect("safe server should stop");
     }

@@ -73,4 +73,15 @@ mod tests {
             "window.dispatchEvent(new CustomEvent('porta:folder-dropped', { detail: \"/Users/you/Client's “Final” 文件\" }));"
         );
     }
+
+    #[test]
+    fn preserves_windows_backslashes_in_json_safe_event_detail() {
+        let path = Path::new(r"C:\Users\you\Client Files");
+        let script = folder_drop_script(path).expect("Windows path should become a script");
+
+        assert_eq!(
+            script,
+            r#"window.dispatchEvent(new CustomEvent('porta:folder-dropped', { detail: "C:\\Users\\you\\Client Files" }));"#
+        );
+    }
 }

@@ -23,7 +23,8 @@ fi
 
 cd "$repo_root"
 
-echo "==> TypeScript and UI production build"
+echo "==> UI unit tests and production build"
+npm --prefix ui run test
 npm --prefix ui run build
 
 echo "==> Rust tests, clippy, and formatting"
@@ -39,4 +40,4 @@ echo "==> Rust tests, clippy, and formatting"
     -- --ignored --exact --nocapture
 )
 
-echo "Release QA passed: zero TypeScript errors, zero clippy warnings, and zero cloudflared orphans after 10 cycles."
+echo "Release QA passed: UI tests, TypeScript, Rust, clippy, formatting, and zero cloudflared orphans after 10 cycles."

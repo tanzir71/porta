@@ -18,8 +18,12 @@ use tunnel::TunnelManager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            let _ = tray::show_main_window(app);
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if has_quit_arg(&args) {
+                app.exit(0);
+            } else {
+                let _ = tray::show_main_window(app);
+            }
         }))
         .manage(TunnelManager::default())
         .plugin(tauri_plugin_autostart::init(
@@ -68,4 +72,19 @@ pub fn run() {
             );
             std::process::exit(1);
         });
+}
+
+fn has_quit_arg(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--quit")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_quit_arg;
+
+    #[test]
+    fn recognizes_explicit_quit_argument() {
+        assert!(has_quit_arg(&["porta.exe".to_owned(), "--quit".to_owned()]));
+        assert!(!has_quit_arg(&["porta.exe".to_owned()]));
+    }
 }

@@ -19,7 +19,12 @@ const OPEN_ID: &str = "tray:open";
 const QUIT_ID: &str = "tray:quit";
 const COPY_PREFIX: &str = "tray:copy:";
 const TOGGLE_PREFIX: &str = "tray:toggle:";
-const TRAY_ERROR: &str = "Porta couldn't create its menu bar menu. Quit and reopen Porta.";
+#[cfg(target_os = "windows")]
+const TRAY_ERROR: &str = "Porta couldn't create its notification-area menu. Quit and reopen Porta.";
+#[cfg(target_os = "macos")]
+const TRAY_ERROR: &str = "Porta couldn't create its menu-bar menu. Quit and reopen Porta.";
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+const TRAY_ERROR: &str = "Porta couldn't create its system tray menu. Quit and reopen Porta.";
 
 #[derive(Debug, PartialEq, Eq)]
 struct ShareMenuRow {
@@ -35,7 +40,7 @@ pub(crate) fn setup<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
-        .icon_as_template(true)
+        .icon_as_template(tray_icon_is_template())
         .tooltip("Porta")
         .menu(&menu)
         .on_menu_event(handle_menu_event)
@@ -50,18 +55,31 @@ pub(crate) fn refresh<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     };
     let shares = app.state::<Store>().read(|shares, _| shares.to_vec())?;
     let menu = build_menu(app, &shares).map_err(|_| TRAY_ERROR.to_owned())?;
-    tray.set_icon_with_as_template(Some(tray_icon(&shares)?), true)
+    tray.set_icon_with_as_template(Some(tray_icon(&shares)?), tray_icon_is_template())
         .map_err(|_| TRAY_ERROR.to_owned())?;
     tray.set_menu(Some(menu)).map_err(|_| TRAY_ERROR.to_owned())
 }
 
 fn tray_icon(shares: &[Share]) -> Result<Image<'static>, String> {
+    #[cfg(target_os = "macos")]
     let bytes: &'static [u8] = if has_live_share(shares) {
         include_bytes!("../icons/trayActiveTemplate.png")
     } else {
         include_bytes!("../icons/trayTemplate.png")
     };
+
+    #[cfg(not(target_os = "macos"))]
+    let bytes: &'static [u8] = if has_live_share(shares) {
+        include_bytes!("../icons/trayWindowsActive.png")
+    } else {
+        include_bytes!("../icons/trayWindows.png")
+    };
+
     Image::from_bytes(bytes).map_err(|_| TRAY_ERROR.to_owned())
+}
+
+const fn tray_icon_is_template() -> bool {
+    cfg!(target_os = "macos")
 }
 
 fn has_live_share(shares: &[Share]) -> bool {
