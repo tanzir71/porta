@@ -25,6 +25,8 @@ use crate::{
 
 const URL_TIMEOUT: Duration = Duration::from_secs(30);
 const GRACEFUL_STOP_TIMEOUT: Duration = Duration::from_secs(3);
+const MAX_BACKOFF_SECONDS: u64 = 60;
+const MAX_CONSECUTIVE_FAILURES: u8 = 3;
 const ALREADY_RUNNING: &str = "This share is already starting. Wait a moment, then try again.";
 const SIDECAR_MISSING: &str =
     "Porta couldn't find its tunnel helper. Reinstall Porta, then try again.";
@@ -35,6 +37,8 @@ const CLOUDFLARE_ERROR: &str =
 const MISSING_SHARE: &str = "That share no longer exists. Return to the main window and try again.";
 const STOP_ERROR: &str =
     "Porta couldn't stop this share cleanly. Quit Porta, then check Activity Monitor for cloudflared.";
+const UNSTABLE_TUNNEL_ERROR: &str =
+    "The tunnel keeps dropping. Porta will retry when you toggle it back on.";
 const WINDOW_REFRESH_ERROR: &str = "Porta saved the change but couldn't refresh its windows. Close and reopen the window to see it.";
 
 static TUNNEL_URL: LazyLock<Regex> = LazyLock::new(|| {
@@ -51,7 +55,24 @@ struct TunnelState {
 struct TunnelSession {
     generation: u64,
     server: FileServer,
-    child: CommandChild,
+    child: Option<CommandChild>,
+}
+
+#[derive(Default)]
+struct RetryState {
+    consecutive_failures: u8,
+}
+
+impl RetryState {
+    fn fail(&mut self) -> Option<Duration> {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        (self.consecutive_failures < MAX_CONSECUTIVE_FAILURES)
+            .then(|| retry_delay(self.consecutive_failures))
+    }
+
+    fn succeed(&mut self) {
+        self.consecutive_failures = 0;
+    }
 }
 
 pub struct TunnelManager {
@@ -93,20 +114,12 @@ impl TunnelManager {
             }
         };
         let origin = server.address();
-        let command = match app.shell().sidecar("cloudflared") {
-            Ok(command) => command.args(cloudflared_args(origin)),
-            Err(_) => {
-                self.release_pending(&share.id).await;
-                let _ = server.stop().await;
-                return Err(SIDECAR_MISSING.to_owned());
-            }
-        };
-        let (receiver, child) = match command.spawn() {
+        let (receiver, child) = match spawn_cloudflared(app, origin) {
             Ok(process) => process,
-            Err(_) => {
+            Err(error) => {
                 self.release_pending(&share.id).await;
                 let _ = server.stop().await;
-                return Err(SIDECAR_START_ERROR.to_owned());
+                return Err(error);
             }
         };
 
@@ -119,14 +132,14 @@ impl TunnelManager {
                 TunnelSession {
                     generation,
                     server,
-                    child,
+                    child: Some(child),
                 },
             );
         }
 
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            monitor_startup(app, share.id, generation, receiver).await;
+            supervise_tunnel(app, share.id, generation, origin, receiver).await;
         });
         Ok(())
     }
@@ -156,6 +169,42 @@ impl TunnelManager {
             .is_some_and(|session| session.generation == generation);
         is_current.then(|| state.sessions.remove(id)).flatten()
     }
+
+    async fn take_child(&self, id: &str, generation: u64) -> Option<CommandChild> {
+        let mut state = self.state.lock().await;
+        state
+            .sessions
+            .get_mut(id)
+            .filter(|session| session.generation == generation)
+            .and_then(|session| session.child.take())
+    }
+
+    async fn install_child(
+        &self,
+        id: &str,
+        generation: u64,
+        child: CommandChild,
+    ) -> Result<(), CommandChild> {
+        let mut state = self.state.lock().await;
+        let Some(session) = state
+            .sessions
+            .get_mut(id)
+            .filter(|session| session.generation == generation && session.child.is_none())
+        else {
+            return Err(child);
+        };
+        session.child = Some(child);
+        Ok(())
+    }
+
+    async fn is_current(&self, id: &str, generation: u64) -> bool {
+        self.state
+            .lock()
+            .await
+            .sessions
+            .get(id)
+            .is_some_and(|session| session.generation == generation)
+    }
 }
 
 impl Drop for TunnelManager {
@@ -180,23 +229,130 @@ fn cloudflared_args(origin: SocketAddr) -> Vec<String> {
     ]
 }
 
-async fn monitor_startup(
+fn spawn_cloudflared(
+    app: &AppHandle,
+    origin: SocketAddr,
+) -> Result<(tauri::async_runtime::Receiver<CommandEvent>, CommandChild), String> {
+    let command = app
+        .shell()
+        .sidecar("cloudflared")
+        .map_err(|_| SIDECAR_MISSING.to_owned())?
+        .args(cloudflared_args(origin));
+    command.spawn().map_err(|_| SIDECAR_START_ERROR.to_owned())
+}
+
+fn retry_delay(consecutive_failures: u8) -> Duration {
+    let exponent = consecutive_failures.saturating_sub(1).min(6);
+    Duration::from_secs((1_u64 << exponent).min(MAX_BACKOFF_SECONDS))
+}
+
+async fn supervise_tunnel(
     app: AppHandle,
     share_id: String,
     generation: u64,
-    receiver: tauri::async_runtime::Receiver<CommandEvent>,
+    origin: SocketAddr,
+    mut receiver: tauri::async_runtime::Receiver<CommandEvent>,
 ) {
-    match wait_for_tunnel_url(receiver, URL_TIMEOUT).await {
+    let manager = app.state::<TunnelManager>();
+    match wait_for_tunnel_url(&mut receiver, URL_TIMEOUT).await {
         Ok(url) => {
+            if !manager.is_current(&share_id, generation).await {
+                return;
+            }
             if transition_share(&app, &share_id, ShareStatus::Live, Some(url), None).is_err() {
                 let _ = cleanup_session(&app, &share_id, generation).await;
+                return;
             }
         }
         Err(error) => {
             if cleanup_session(&app, &share_id, generation).await {
                 let _ = transition_share(&app, &share_id, ShareStatus::Error, None, Some(error));
             }
+            return;
         }
+    }
+
+    let mut retries = RetryState::default();
+    loop {
+        wait_for_process_end(&mut receiver).await;
+        if !stop_managed_child(&manager, &share_id, generation).await {
+            return;
+        }
+
+        let Some(mut delay) = retries.fail() else {
+            mark_unstable(&app, &share_id, generation).await;
+            return;
+        };
+
+        loop {
+            tokio::time::sleep(delay).await;
+            if !manager.is_current(&share_id, generation).await {
+                return;
+            }
+
+            let (mut next_receiver, child) = match spawn_cloudflared(&app, origin) {
+                Ok(process) => process,
+                Err(_) => {
+                    let Some(next_delay) = retries.fail() else {
+                        mark_unstable(&app, &share_id, generation).await;
+                        return;
+                    };
+                    delay = next_delay;
+                    continue;
+                }
+            };
+            if let Err(child) = manager.install_child(&share_id, generation, child).await {
+                let _ = terminate_child(child).await;
+                return;
+            }
+
+            match wait_for_tunnel_url(&mut next_receiver, URL_TIMEOUT).await {
+                Ok(url) => {
+                    if !manager.is_current(&share_id, generation).await {
+                        return;
+                    }
+                    retries.succeed();
+                    if transition_share(&app, &share_id, ShareStatus::Live, Some(url), None)
+                        .is_err()
+                    {
+                        let _ = cleanup_session(&app, &share_id, generation).await;
+                        return;
+                    }
+                    receiver = next_receiver;
+                    break;
+                }
+                Err(_) => {
+                    if !stop_managed_child(&manager, &share_id, generation).await {
+                        return;
+                    }
+                    let Some(next_delay) = retries.fail() else {
+                        mark_unstable(&app, &share_id, generation).await;
+                        return;
+                    };
+                    delay = next_delay;
+                }
+            }
+        }
+    }
+}
+
+async fn stop_managed_child(manager: &TunnelManager, share_id: &str, generation: u64) -> bool {
+    let Some(child) = manager.take_child(share_id, generation).await else {
+        return false;
+    };
+    let _ = terminate_child(child).await;
+    true
+}
+
+async fn mark_unstable(app: &AppHandle, share_id: &str, generation: u64) {
+    if cleanup_session(app, share_id, generation).await {
+        let _ = transition_share(
+            app,
+            share_id,
+            ShareStatus::Error,
+            None,
+            Some(UNSTABLE_TUNNEL_ERROR.to_owned()),
+        );
     }
 }
 
@@ -213,7 +369,12 @@ async fn cleanup_session(app: &AppHandle, share_id: &str, generation: u64) -> bo
 async fn shutdown_session(session: TunnelSession) -> Result<(), String> {
     let TunnelSession { server, child, .. } = session;
     let (process_stopped, server_stopped) = tokio::join!(
-        terminate_child(child),
+        async move {
+            match child {
+                Some(child) => terminate_child(child).await,
+                None => true,
+            }
+        },
         tokio::time::timeout(GRACEFUL_STOP_TIMEOUT, server.stop())
     );
 
@@ -246,21 +407,26 @@ async fn wait_for_process_exit(pid: u32, timeout: Duration) -> bool {
 
 fn terminate_sessions_blocking(sessions: Vec<TunnelSession>) {
     for session in &sessions {
-        let _ = send_signal(session.child.pid(), libc::SIGTERM);
+        if let Some(child) = &session.child {
+            let _ = send_signal(child.pid(), libc::SIGTERM);
+        }
     }
 
     let deadline = std::time::Instant::now() + GRACEFUL_STOP_TIMEOUT;
     while sessions
         .iter()
-        .any(|session| process_is_running(session.child.pid()))
+        .filter_map(|session| session.child.as_ref())
+        .any(|child| process_is_running(child.pid()))
         && std::time::Instant::now() < deadline
     {
         std::thread::sleep(Duration::from_millis(25));
     }
 
     for session in sessions {
-        if process_is_running(session.child.pid()) {
-            let _ = session.child.kill();
+        if let Some(child) = session.child {
+            if process_is_running(child.pid()) {
+                let _ = child.kill();
+            }
         }
     }
 }
@@ -289,7 +455,7 @@ fn process_is_running(pid: u32) -> bool {
 }
 
 async fn wait_for_tunnel_url(
-    mut receiver: tauri::async_runtime::Receiver<CommandEvent>,
+    receiver: &mut tauri::async_runtime::Receiver<CommandEvent>,
     timeout: Duration,
 ) -> Result<String, String> {
     tokio::time::timeout(timeout, async move {
@@ -315,6 +481,14 @@ async fn wait_for_tunnel_url(
     })
     .await
     .unwrap_or_else(|_| Err(CLOUDFLARE_ERROR.to_owned()))
+}
+
+async fn wait_for_process_end(receiver: &mut tauri::async_runtime::Receiver<CommandEvent>) {
+    while let Some(event) = receiver.recv().await {
+        if matches!(event, CommandEvent::Error(_) | CommandEvent::Terminated(_)) {
+            return;
+        }
+    }
 }
 
 pub(crate) fn transition_share<R: Runtime>(
@@ -354,8 +528,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        cloudflared_args, send_signal, transition_share, wait_for_process_exit,
-        wait_for_tunnel_url, URL_TIMEOUT,
+        cloudflared_args, retry_delay, send_signal, transition_share, wait_for_process_end,
+        wait_for_process_exit, wait_for_tunnel_url, RetryState, UNSTABLE_TUNNEL_ERROR, URL_TIMEOUT,
     };
     use crate::{
         server::{FileServer, FileServerConfig},
@@ -376,7 +550,7 @@ mod tests {
             ]
         );
 
-        let (sender, receiver) = tauri::async_runtime::channel(4);
+        let (sender, mut receiver) = tauri::async_runtime::channel(4);
         sender
             .send(CommandEvent::Stderr(
                 b"INF requesting https://quiet-".to_vec(),
@@ -389,13 +563,52 @@ mod tests {
             ))
             .await
             .expect("second stderr event should send");
+        sender
+            .send(CommandEvent::Error("simulated crash".to_owned()))
+            .await
+            .expect("termination event should send");
         drop(sender);
 
         assert_eq!(
-            wait_for_tunnel_url(receiver, Duration::from_millis(100))
+            wait_for_tunnel_url(&mut receiver, Duration::from_millis(100))
                 .await
                 .expect("URL should be discovered"),
             "https://quiet-harbor.trycloudflare.com"
+        );
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            wait_for_process_end(&mut receiver),
+        )
+        .await
+        .expect("supervisor should continue through the later crash event");
+    }
+
+    #[test]
+    fn retry_policy_backs_off_and_stops_after_three_consecutive_failures() {
+        let delays: Vec<_> = (1..=8).map(retry_delay).collect();
+        assert_eq!(
+            delays,
+            [
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+                Duration::from_secs(4),
+                Duration::from_secs(8),
+                Duration::from_secs(16),
+                Duration::from_secs(32),
+                Duration::from_secs(60),
+                Duration::from_secs(60),
+            ]
+        );
+
+        let mut retries = RetryState::default();
+        assert_eq!(retries.fail(), Some(Duration::from_secs(1)));
+        assert_eq!(retries.fail(), Some(Duration::from_secs(2)));
+        assert_eq!(retries.fail(), None);
+        retries.succeed();
+        assert_eq!(retries.fail(), Some(Duration::from_secs(1)));
+        assert_eq!(
+            UNSTABLE_TUNNEL_ERROR,
+            "The tunnel keeps dropping. Porta will retry when you toggle it back on."
         );
     }
 
@@ -448,7 +661,7 @@ mod tests {
             super::TunnelSession {
                 generation: 1,
                 server,
-                child,
+                child: Some(child),
             },
         );
 
@@ -478,7 +691,7 @@ mod tests {
             super::TunnelSession {
                 generation: 2,
                 server: quit_server,
-                child: quit_child,
+                child: Some(quit_child),
             },
         );
 
