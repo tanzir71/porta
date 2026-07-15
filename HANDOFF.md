@@ -197,7 +197,7 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 ### M7 — Release
 - [x] Version 1.0.0 tagged; CHANGELOG.md written
 - [x] .dmg < 25 MB (cloudflared included)
-- [ ] Zero clippy warnings, zero TS errors (`npm run build`), zero orphan processes after 10 start/stop cycles (scripted)
+- [x] Zero clippy warnings, zero TS errors (`npm run build`), zero orphan processes after 10 start/stop cycles (scripted)
 
 ---
 

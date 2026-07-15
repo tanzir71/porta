@@ -1299,6 +1299,67 @@ mod tests {
         assert!(tokio::net::TcpStream::connect(address).await.is_err());
     }
 
+    #[tokio::test]
+    #[ignore = "spawns the bundled cloudflared sidecar for release QA"]
+    async fn bundled_cloudflared_has_zero_orphans_after_ten_start_stop_cycles() {
+        let data_dir = tempdir().expect("temporary store should be created");
+        let root = tempdir().expect("temporary share should be created");
+        let store = Store::load_from_dir(data_dir.path()).expect("test store should load");
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/ipc_contract.json"))
+                .expect("fixture should contain JSON");
+        let mut share: crate::shares::Share = serde_json::from_value(fixture["share"].clone())
+            .expect("fixture share should deserialize");
+        share.id = "ten-cycle-release-qa".to_owned();
+        share.path = Some(root.path().to_string_lossy().into_owned());
+        share.status = ShareStatus::Stopped;
+        share.url = None;
+        share.error = None;
+        share.password_protected = false;
+        store
+            .update(|shares, settings| {
+                shares.push(share.clone());
+                settings.copy_url_on_start = false;
+                Ok(())
+            })
+            .expect("QA share should persist");
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_shell::init())
+            .manage(store)
+            .manage(super::TunnelManager::default())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app should build");
+
+        for cycle in 1..=10 {
+            let manager = app.state::<super::TunnelManager>();
+            manager
+                .start(app.handle(), share.clone())
+                .await
+                .unwrap_or_else(|error| panic!("cycle {cycle} should start: {error}"));
+            let pid = manager
+                .state
+                .lock()
+                .await
+                .sessions
+                .get(&share.id)
+                .and_then(|session| session.child.as_ref())
+                .map(tauri_plugin_shell::process::CommandChild::pid)
+                .expect("started cycle should own a cloudflared child");
+            assert!(super::process_is_running(pid));
+
+            manager
+                .stop(&share.id)
+                .await
+                .unwrap_or_else(|error| panic!("cycle {cycle} should stop: {error}"));
+            assert!(
+                !super::process_is_running(pid),
+                "cycle {cycle} left cloudflared PID {pid} running"
+            );
+            assert!(manager.state.lock().await.sessions.is_empty());
+            println!("release QA cycle {cycle}/10 stopped PID {pid}");
+        }
+    }
+
     #[test]
     fn persists_starting_and_live_transitions_and_emits_them() {
         let data_dir = tempdir().expect("temporary store should be created");
