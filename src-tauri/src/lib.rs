@@ -28,7 +28,7 @@ pub fn run() {
         .setup(|app| {
             let store = Store::load(app.handle()).map_err(std::io::Error::other)?;
             tauri::Manager::manage(app, store);
-            commands::apply_initial_window_settings(app.handle()).map_err(std::io::Error::other)?;
+            commands::apply_initial_app_settings(app.handle()).map_err(std::io::Error::other)?;
             tray::setup(app.handle()).map_err(std::io::Error::other)?;
             Ok(())
         })

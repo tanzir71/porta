@@ -294,7 +294,10 @@ pub(crate) fn update_settings(
     let previous = store.read(|_, settings| settings.clone())?;
     let next = apply_settings_patch(&previous, &patch);
 
-    apply_setting_side_effects(&app, &previous, &next)?;
+    if let Err(error) = apply_setting_side_effects(&app, &previous, &next) {
+        let _ = apply_setting_side_effects(&app, &next, &previous);
+        return Err(error);
+    }
     let save_result = store.update(|_, settings| {
         *settings = next.clone();
         Ok(next.clone())
@@ -431,14 +434,7 @@ fn apply_setting_side_effects(
     next: &Settings,
 ) -> Result<(), String> {
     if previous.launch_at_login != next.launch_at_login {
-        let result = if next.launch_at_login {
-            app.autolaunch().enable()
-        } else {
-            app.autolaunch().disable()
-        };
-        result.map_err(|_| {
-            "Porta couldn't update Login Items. Open System Settings, then try again.".to_owned()
-        })?;
+        apply_autolaunch(app, next.launch_at_login)?;
     }
 
     #[cfg(target_os = "macos")]
@@ -449,13 +445,31 @@ fn apply_setting_side_effects(
     Ok(())
 }
 
-pub(crate) fn apply_initial_window_settings(app: &AppHandle) -> Result<(), String> {
+pub(crate) fn apply_initial_app_settings(app: &AppHandle) -> Result<(), String> {
+    let (launch_at_login, show_dock_icon) = app
+        .state::<Store>()
+        .read(|_, settings| (settings.launch_at_login, settings.show_dock_icon))?;
+    apply_autolaunch(app, launch_at_login)?;
+
     #[cfg(target_os = "macos")]
-    {
-        let show_dock_icon = app
-            .state::<Store>()
-            .read(|_, settings| settings.show_dock_icon)?;
-        apply_dock_policy(app, show_dock_icon)?;
+    apply_dock_policy(app, show_dock_icon)?;
+
+    Ok(())
+}
+
+fn apply_autolaunch(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    const ERROR: &str = "Porta couldn't update Login Items. Open System Settings, then try again.";
+    let autolaunch = app.autolaunch();
+    if enabled {
+        autolaunch.enable()
+    } else {
+        autolaunch.disable()
+    }
+    .map_err(|_| ERROR.to_owned())?;
+
+    let actual = autolaunch.is_enabled().map_err(|_| ERROR.to_owned())?;
+    if actual != enabled {
+        return Err(ERROR.to_owned());
     }
     Ok(())
 }
