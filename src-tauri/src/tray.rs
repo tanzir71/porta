@@ -31,8 +31,7 @@ struct ShareMenuRow {
 pub(crate) fn setup<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     let shares = app.state::<Store>().read(|shares, _| shares.to_vec())?;
     let menu = build_menu(app, &shares).map_err(|_| TRAY_ERROR.to_owned())?;
-    let icon = Image::from_bytes(include_bytes!("../icons/trayTemplate.png"))
-        .map_err(|_| TRAY_ERROR.to_owned())?;
+    let icon = tray_icon(&shares)?;
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
@@ -51,7 +50,24 @@ pub(crate) fn refresh<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     };
     let shares = app.state::<Store>().read(|shares, _| shares.to_vec())?;
     let menu = build_menu(app, &shares).map_err(|_| TRAY_ERROR.to_owned())?;
+    tray.set_icon_with_as_template(Some(tray_icon(&shares)?), true)
+        .map_err(|_| TRAY_ERROR.to_owned())?;
     tray.set_menu(Some(menu)).map_err(|_| TRAY_ERROR.to_owned())
+}
+
+fn tray_icon(shares: &[Share]) -> Result<Image<'static>, String> {
+    let bytes: &'static [u8] = if has_live_share(shares) {
+        include_bytes!("../icons/trayActiveTemplate.png")
+    } else {
+        include_bytes!("../icons/trayTemplate.png")
+    };
+    Image::from_bytes(bytes).map_err(|_| TRAY_ERROR.to_owned())
+}
+
+fn has_live_share(shares: &[Share]) -> bool {
+    shares
+        .iter()
+        .any(|share| matches!(share.status, ShareStatus::Live))
 }
 
 fn build_menu<R: Runtime>(app: &AppHandle<R>, shares: &[Share]) -> tauri::Result<Menu<R>> {
@@ -205,7 +221,7 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::share_menu_row;
+    use super::{has_live_share, share_menu_row};
     use crate::shares::{Share, ShareStatus};
 
     fn fixture() -> Share {
@@ -232,5 +248,18 @@ mod tests {
         assert_eq!(stopped.label, "○ Client Mockups — Copy link / Turn on");
         assert!(!stopped.copy_enabled);
         assert_eq!(stopped.toggle_label, "Turn on");
+    }
+
+    #[test]
+    fn tray_badge_appears_only_when_a_share_is_live() {
+        let mut share = fixture();
+        share.status = ShareStatus::Starting;
+        assert!(!has_live_share(&[share.clone()]));
+
+        share.status = ShareStatus::Live;
+        assert!(has_live_share(&[share.clone()]));
+
+        share.status = ShareStatus::Error;
+        assert!(!has_live_share(&[share]));
     }
 }
