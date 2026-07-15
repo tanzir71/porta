@@ -200,10 +200,10 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 - [x] Zero clippy warnings, zero TS errors (`npm run build`), zero orphan processes after 10 start/stop cycles (scripted)
 
 ### M8 — Windows 1.1
-- [ ] Windows 10/11 x64 backend, paths, credential storage, taskbar, tray, autostart, and process cleanup pass on `windows-latest`
-- [ ] Per-user unsigned NSIS installer contains the checksum-verified `cloudflared` sidecar and survives install/launch/uninstall smoke testing
-- [ ] Version 1.1.0 release contains Apple-silicon DMG and Windows x64 setup EXE with matching SHA-256 attachments
-- [ ] README, release notes, and GitHub Pages present platform-specific downloads and Gatekeeper/SmartScreen instructions
+- [x] Windows 10/11 x64 backend, paths, credential storage, taskbar, tray, autostart, and process cleanup pass on `windows-latest`
+- [x] Per-user unsigned NSIS installer contains the checksum-verified `cloudflared` sidecar and survives install/launch/uninstall smoke testing
+- [x] Version 1.1.0 release contains Apple-silicon DMG and Windows x64 setup EXE with matching SHA-256 attachments
+- [x] README, release notes, and GitHub Pages present platform-specific downloads and Gatekeeper/SmartScreen instructions
 
 ---
 
