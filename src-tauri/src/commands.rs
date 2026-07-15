@@ -87,6 +87,30 @@ pub(crate) async fn start_share(
     start_share_in(&app, &tunnels, &id).await
 }
 
+#[tauri::command]
+pub(crate) async fn stop_share(
+    app: AppHandle,
+    tunnels: State<'_, TunnelManager>,
+    id: String,
+) -> Result<(), String> {
+    stop_share_in(&app, &tunnels, &id).await
+}
+
+async fn stop_share_in(app: &AppHandle, tunnels: &TunnelManager, id: &str) -> Result<(), String> {
+    let store = app.state::<Store>();
+    store.read(|shares, _| {
+        shares
+            .iter()
+            .any(|share| share.id == id)
+            .then_some(())
+            .ok_or_else(|| MISSING_SHARE.to_owned())
+    })??;
+
+    tunnels.stop(id).await?;
+    tunnel::transition_share(app, id, ShareStatus::Stopped, None, None)?;
+    Ok(())
+}
+
 async fn start_share_in(app: &AppHandle, tunnels: &TunnelManager, id: &str) -> Result<(), String> {
     let store = app.state::<Store>();
     let current = store.read(|shares, _| {
@@ -151,11 +175,13 @@ pub(crate) fn update_share(
 }
 
 #[tauri::command]
-pub(crate) fn delete_share(
+pub(crate) async fn delete_share(
     app: AppHandle,
     store: State<'_, Store>,
+    tunnels: State<'_, TunnelManager>,
     id: String,
 ) -> Result<(), String> {
+    stop_share_in(&app, &tunnels, &id).await?;
     delete_share_in(&app, &store, id)
 }
 

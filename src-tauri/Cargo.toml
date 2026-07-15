@@ -17,6 +17,7 @@ axum = { version = "0.8.9", default-features = false, features = ["http1", "mult
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 keyring = "4.1"
+libc = "0.2"
 percent-encoding = "2"
 regex = "1"
 serde = { version = "1", features = ["derive"] }

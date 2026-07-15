@@ -30,6 +30,7 @@ pub fn run() {
             commands::list_shares,
             commands::create_share,
             commands::start_share,
+            commands::stop_share,
             commands::delete_share,
             commands::update_share,
             commands::pick_folder,
