@@ -1,0 +1,93 @@
+import React from "react";
+import type { Settings } from "../lib/ipc";
+
+export interface SettingsSheetProps {
+  settings: Settings;
+  onChange: (patch: Partial<Settings>) => void;
+  onClose: () => void;
+  version?: string;
+}
+
+interface RowProps {
+  title: string;
+  desc: string;
+  checked: boolean;
+  onToggle: () => void;
+}
+
+const Row = ({ title, desc, checked, onToggle }: RowProps) => (
+  <div className="opt-row">
+    <div>
+      <div className="o-title">{title}</div>
+      <div className="o-desc">{desc}</div>
+    </div>
+    <button className="switch" role="switch" aria-checked={checked} aria-label={title} onClick={onToggle} />
+  </div>
+);
+
+export function SettingsSheet({ settings, onChange, onClose, version = "1.0.0" }: SettingsSheetProps) {
+  return (
+    <div className="sheet-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="sheet" role="dialog" aria-modal="true" aria-label="Settings">
+        <h3>Settings</h3>
+        <p className="sub">Porta {version} · free forever, tunnels by Cloudflare</p>
+
+        <div className="section-label">Startup</div>
+        <Row
+          title="Launch Porta at login"
+          desc="Porta opens quietly in the menu bar when you sign in."
+          checked={settings.launchAtLogin}
+          onToggle={() => onChange({ launchAtLogin: !settings.launchAtLogin })}
+        />
+        <Row
+          title="Resume shares automatically"
+          desc="Shares marked “start automatically” go live on launch."
+          checked={settings.autoStartShares}
+          onToggle={() => onChange({ autoStartShares: !settings.autoStartShares })}
+        />
+        <Row
+          title="Show Dock icon"
+          desc="Off = Porta lives in the menu bar only."
+          checked={settings.showDockIcon}
+          onToggle={() => onChange({ showDockIcon: !settings.showDockIcon })}
+        />
+
+        <div className="section-label">Sharing</div>
+        <Row
+          title="Copy link when a share goes live"
+          desc="The public URL lands on your clipboard, ready to paste."
+          checked={settings.copyUrlOnStart}
+          onToggle={() => onChange({ copyUrlOnStart: !settings.copyUrlOnStart })}
+        />
+        <Row
+          title="Notify on first visitor"
+          desc="A notification when someone opens your link."
+          checked={settings.notifyOnFirstVisitor}
+          onToggle={() => onChange({ notifyOnFirstVisitor: !settings.notifyOnFirstVisitor })}
+        />
+
+        <div className="section-label">Appearance</div>
+        <div className="opt-row">
+          <div>
+            <div className="o-title">Theme</div>
+            <div className="o-desc">Follows macOS by default.</div>
+          </div>
+          <select
+            className="select"
+            value={settings.theme}
+            aria-label="Theme"
+            onChange={(e) => onChange({ theme: e.target.value as Settings["theme"] })}
+          >
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
+
+        <div className="foot">
+          <button className="btn btn-primary" onClick={onClose}>Done</button>
+        </div>
+      </div>
+    </div>
+  );
+}

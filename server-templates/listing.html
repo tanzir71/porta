@@ -1,0 +1,151 @@
+<!doctype html>
+<!--
+  listing.html — the page VISITORS see when browsing a shared folder.
+
+  CODEX: embed this template in the Rust binary (include_str!) and render it
+  server-side by replacing the placeholders below. No JS framework; the inline
+  script only does client-side filtering and the upload widget.
+
+  Placeholders (simple string replacement):
+    {{SHARE_NAME}}   display name of the share
+    {{BREADCRUMB}}   HTML: <a href="/">Home</a> <span>/</span> <a …>sub</a> …
+    {{ROWS}}         HTML: one <a class="row" …> per entry (see template row below)
+    {{UPLOADS}}      "block" if allowUploads else "none"
+
+  Row shape to generate per entry (dirs first, then files, both A→Z):
+    <a class="row" href="/path/to/entry{/ if dir}">
+      <span class="ic">{FOLDER_SVG or FILE_SVG}</span>
+      <span class="nm">name</span>
+      <span class="sz">1.2 MB</span>          (— for dirs)
+      <span class="dt">Jul 15, 2026</span>
+    </a>
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>{{SHARE_NAME}}</title>
+<style>
+  :root {
+    --bg: #f5f5f7; --card: #fff; --border: rgba(0,0,0,.09);
+    --text: #1d1d1f; --sec: #6e6e73; --ter: #9b9ba0;
+    --accent: #0a84ff; --accent-soft: rgba(10,132,255,.1);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1a1a1c; --card: #262629; --border: rgba(255,255,255,.09);
+      --text: #f5f5f7; --sec: #a1a1a6; --ter: #6e6e73;
+      --accent-soft: rgba(10,132,255,.18);
+    }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 40px 20px 80px; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+  .logo {
+    width: 40px; height: 40px; border-radius: 11px; flex-shrink: 0;
+    background: var(--accent-soft); display: grid; place-items: center; color: var(--accent);
+  }
+  h1 { font-size: 21px; letter-spacing: -.3px; }
+  .crumb { color: var(--sec); font-size: 13px; margin: 0 0 20px 52px; }
+  .crumb a { color: var(--sec); text-decoration: none; }
+  .crumb a:hover { color: var(--accent); }
+  .crumb span { margin: 0 6px; color: var(--ter); }
+  .search {
+    width: 100%; height: 40px; padding: 0 14px; margin-bottom: 14px;
+    border-radius: 10px; border: 1px solid var(--border);
+    background: var(--card); color: var(--text); font: inherit; outline: none;
+  }
+  .search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .list {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 14px; overflow: hidden;
+    box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 4px 20px rgba(0,0,0,.04);
+  }
+  .row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 16px; text-decoration: none; color: inherit;
+    border-bottom: 1px solid var(--border);
+  }
+  .row:last-child { border-bottom: 0; }
+  .row:hover { background: var(--accent-soft); }
+  .ic { color: var(--accent); display: grid; place-items: center; flex-shrink: 0; }
+  .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .sz { color: var(--ter); font-size: 13px; width: 74px; text-align: right; flex-shrink: 0; }
+  .dt { color: var(--ter); font-size: 13px; width: 106px; text-align: right; flex-shrink: 0; }
+  .empty-msg { padding: 40px; text-align: center; color: var(--ter); }
+  .upload { display: {{UPLOADS}}; margin-top: 14px; }
+  .upzone {
+    border: 2px dashed var(--border); border-radius: 14px;
+    padding: 22px; text-align: center; color: var(--sec); cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  .upzone:hover, .upzone.over { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+  .upzone input { display: none; }
+  footer { margin-top: 28px; text-align: center; font-size: 12.5px; color: var(--ter); }
+  footer a { color: var(--sec); }
+  @media (max-width: 480px) { .dt { display: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M9 13.5h6M12.8 10.7l2.8 2.8-2.8 2.8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+    <h1>{{SHARE_NAME}}</h1>
+  </header>
+  <nav class="crumb">{{BREADCRUMB}}</nav>
+
+  <input class="search" type="search" placeholder="Filter files…" id="q" autocomplete="off">
+
+  <div class="list" id="list">
+    {{ROWS}}
+    <div class="empty-msg" id="nores" style="display:none">No matching files</div>
+  </div>
+
+  <div class="upload">
+    <label class="upzone" id="upzone">
+      <input type="file" id="upinput" multiple>
+      <strong>Drop files here</strong> or click to upload
+    </label>
+  </div>
+
+  <footer>Shared privately with <a href="https://github.com/" rel="noopener">Porta</a> — link works only while the host is sharing</footer>
+</div>
+<script>
+  // filter
+  var q = document.getElementById('q'), rows = [].slice.call(document.querySelectorAll('.row'));
+  var nores = document.getElementById('nores');
+  q.addEventListener('input', function () {
+    var t = q.value.toLowerCase(), n = 0;
+    rows.forEach(function (r) {
+      var hit = r.querySelector('.nm').textContent.toLowerCase().indexOf(t) > -1;
+      r.style.display = hit ? '' : 'none'; if (hit) n++;
+    });
+    nores.style.display = n ? 'none' : '';
+  });
+  // uploads (POST multipart to current path; server returns 303 back here)
+  var zone = document.getElementById('upzone'), input = document.getElementById('upinput');
+  if (zone) {
+    function send(files) {
+      var fd = new FormData();
+      for (var i = 0; i < files.length; i++) fd.append('files', files[i]);
+      zone.textContent = 'Uploading…';
+      fetch(location.pathname, { method: 'POST', body: fd })
+        .then(function () { location.reload(); })
+        .catch(function () { zone.textContent = 'Upload failed — try again'; });
+    }
+    input.addEventListener('change', function () { send(input.files); });
+    zone.addEventListener('dragover', function (e) { e.preventDefault(); zone.classList.add('over'); });
+    zone.addEventListener('dragleave', function () { zone.classList.remove('over'); });
+    zone.addEventListener('drop', function (e) { e.preventDefault(); zone.classList.remove('over'); send(e.dataTransfer.files); });
+  }
+</script>
+</body>
+</html>
