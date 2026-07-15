@@ -140,6 +140,45 @@ pub(crate) async fn start_share_in<R: Runtime>(
     Ok(())
 }
 
+pub(crate) fn prepare_auto_start_shares(app: &AppHandle) -> Result<Vec<String>, String> {
+    prepare_auto_start_share_ids(&app.state::<Store>())
+}
+
+fn prepare_auto_start_share_ids(store: &Store) -> Result<Vec<String>, String> {
+    store.update(|shares, settings| {
+        for share in shares.iter_mut() {
+            if matches!(share.status, ShareStatus::Starting | ShareStatus::Live) {
+                share.status = ShareStatus::Stopped;
+                share.url = None;
+                share.error = None;
+            }
+        }
+
+        Ok(if settings.auto_start_shares {
+            shares
+                .iter()
+                .filter(|share| share.auto_start)
+                .map(|share| share.id.clone())
+                .collect()
+        } else {
+            Vec::new()
+        })
+    })
+}
+
+pub(crate) fn spawn_auto_start_shares(app: &AppHandle, share_ids: Vec<String>) {
+    if share_ids.is_empty() {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        for share_id in share_ids {
+            let tunnels = app.state::<TunnelManager>();
+            let _ = start_share_in(&app, &tunnels, &share_id).await;
+        }
+    });
+}
+
 #[tauri::command]
 pub(crate) fn update_share(
     app: AppHandle,
@@ -511,13 +550,20 @@ mod tests {
 
     use super::{
         apply_settings_patch, apply_share_patch, build_share, create_share_in, delete_share_in,
-        emit_app_event,
+        emit_app_event, prepare_auto_start_share_ids,
     };
     use crate::{
         settings::{Settings, SettingsPatch, Theme},
         shares::{AppEvent, CreateShareInput, Share, ShareKind, ShareStatus, UpdateShareInput},
         store::Store,
     };
+
+    fn fixture_share() -> Share {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/ipc_contract.json"))
+                .expect("fixture should contain JSON");
+        serde_json::from_value(fixture["share"].clone()).expect("fixture share should deserialize")
+    }
 
     #[test]
     fn builds_and_patches_contract_shares_while_stopped() {
@@ -587,6 +633,53 @@ mod tests {
         assert_eq!(next.auto_start_shares, settings.auto_start_shares);
         assert_eq!(next.show_dock_icon, settings.show_dock_icon);
         assert_eq!(next.copy_url_on_start, settings.copy_url_on_start);
+    }
+
+    #[test]
+    fn auto_start_selection_honors_both_switches_and_resets_stale_runtime_state() {
+        let data_dir = tempdir().expect("temporary data directory should be created");
+        let store = Store::load_from_dir(data_dir.path()).expect("test store should load");
+        let mut opted_in = fixture_share();
+        opted_in.id = "opted-in".to_owned();
+        opted_in.auto_start = true;
+        opted_in.status = ShareStatus::Live;
+        opted_in.url = Some("https://stale.trycloudflare.com".to_owned());
+
+        let mut opted_out = fixture_share();
+        opted_out.id = "opted-out".to_owned();
+        opted_out.auto_start = false;
+        opted_out.status = ShareStatus::Starting;
+
+        store
+            .update(|shares, settings| {
+                *shares = vec![opted_in, opted_out];
+                settings.auto_start_shares = true;
+                Ok(())
+            })
+            .expect("fixture state should save");
+
+        assert_eq!(
+            prepare_auto_start_share_ids(&store).expect("selection should succeed"),
+            vec!["opted-in"]
+        );
+        store
+            .read(|shares, _| {
+                assert!(shares
+                    .iter()
+                    .all(|share| share.status == ShareStatus::Stopped));
+                assert!(shares.iter().all(|share| share.url.is_none()));
+            })
+            .expect("normalized shares should be readable");
+
+        store
+            .update(|_, settings| {
+                settings.auto_start_shares = false;
+                Ok(())
+            })
+            .expect("master switch should save");
+        assert!(prepare_auto_start_share_ids(&store)
+            .expect("disabled selection should succeed")
+            .is_empty());
     }
 
     #[cfg(target_os = "macos")]

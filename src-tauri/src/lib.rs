@@ -29,7 +29,10 @@ pub fn run() {
             let store = Store::load(app.handle()).map_err(std::io::Error::other)?;
             tauri::Manager::manage(app, store);
             commands::apply_initial_app_settings(app.handle()).map_err(std::io::Error::other)?;
+            let auto_start_ids =
+                commands::prepare_auto_start_shares(app.handle()).map_err(std::io::Error::other)?;
             tray::setup(app.handle()).map_err(std::io::Error::other)?;
+            commands::spawn_auto_start_shares(app.handle(), auto_start_ids);
             Ok(())
         })
         .on_window_event(|window, event| {

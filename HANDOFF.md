@@ -181,7 +181,7 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 - [x] Tray icon state: idle vs ≥1 live share (badge/filled variant)
 - [x] Window close hides; app keeps serving; dock icon policy follows `showDockIcon` live
 - [x] `launchAtLogin` via tauri-plugin-autostart verified in System Settings › Login Items
-- [ ] `autoStartShares` on launch (only when master switch on)
+- [x] `autoStartShares` on launch (only when master switch on)
 - [ ] Native drag-drop wired to the three `porta:*` CustomEvents; dropping a real folder from Finder opens the create sheet with the correct absolute path
 - [ ] Single-instance plugin: second launch focuses existing window
 - [ ] Verify: log out/in → Porta running in menu bar, auto-start shares live, links work
