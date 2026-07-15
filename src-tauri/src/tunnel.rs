@@ -794,14 +794,14 @@ mod tests {
     use tempfile::tempdir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    #[cfg(unix)]
-    use super::send_signal;
     use super::{
         cloudflared_args, first_visitor_notification_title, retry_delay, start_local_origin,
         stats_reporter, supervise_tunnel, transition_share, url_to_copy, wait_for_process_end,
-        wait_for_process_exit, wait_for_tunnel_url, RetryState, CLOUDFLARE_ERROR,
-        FIRST_VISITOR_BODY, FOLDER_MISSING_ERROR, UNSTABLE_TUNNEL_ERROR, URL_TIMEOUT,
+        wait_for_tunnel_url, RetryState, CLOUDFLARE_ERROR, FIRST_VISITOR_BODY,
+        FOLDER_MISSING_ERROR, UNSTABLE_TUNNEL_ERROR, URL_TIMEOUT,
     };
+    #[cfg(unix)]
+    use super::{send_signal, wait_for_process_exit};
     use crate::{
         server::{FileServer, FileServerConfig},
         shares::ShareStatus,

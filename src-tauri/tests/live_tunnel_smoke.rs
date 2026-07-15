@@ -26,8 +26,15 @@ impl CloudflaredGuard {
 
 impl Drop for CloudflaredGuard {
     fn drop(&mut self) {
-        // SAFETY: the guard owns this child PID and SIGTERM is a valid POSIX signal.
-        let _ = unsafe { libc::kill(self.child.id() as libc::pid_t, libc::SIGTERM) };
+        #[cfg(unix)]
+        {
+            // SAFETY: the guard owns this child PID and SIGTERM is a valid POSIX signal.
+            let _ = unsafe { libc::kill(self.child.id() as libc::pid_t, libc::SIGTERM) };
+        }
+        #[cfg(windows)]
+        {
+            let _ = self.child.kill();
+        }
         let deadline = Instant::now() + Duration::from_secs(3);
         while Instant::now() < deadline {
             if self.child.try_wait().ok().flatten().is_some() {
@@ -41,15 +48,47 @@ impl Drop for CloudflaredGuard {
 }
 
 fn bundled_cloudflared() -> PathBuf {
-    let binary = if cfg!(target_arch = "aarch64") {
-        "cloudflared-aarch64-apple-darwin"
-    } else {
-        "cloudflared-x86_64-apple-darwin"
-    };
+    #[cfg(target_os = "windows")]
+    let binary = "cloudflared-x86_64-pc-windows-msvc.exe";
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    let binary = "cloudflared-aarch64-apple-darwin";
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    let binary = "cloudflared-x86_64-apple-darwin";
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let binary = "cloudflared";
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("binaries")
         .join(binary)
 }
+
+#[cfg(unix)]
+fn assert_process_gone(pid: u32) {
+    // SAFETY: signal 0 only checks whether the just-reaped PID still exists.
+    assert_ne!(unsafe { libc::kill(pid as libc::pid_t, 0) }, 0);
+}
+
+#[cfg(windows)]
+fn assert_process_gone(pid: u32) {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, STILL_ACTIVE},
+        System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+    };
+
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return;
+    }
+    let mut exit_code = 0;
+    let queried = unsafe { GetExitCodeProcess(process, &mut exit_code) } != 0;
+    unsafe {
+        CloseHandle(process);
+    }
+    assert!(queried);
+    assert_ne!(exit_code, STILL_ACTIVE as u32);
+}
+
+#[cfg(not(any(unix, windows)))]
+fn assert_process_gone(_pid: u32) {}
 
 /// Requires working internet access and intentionally reaches Cloudflare's Quick Tunnel service.
 #[tokio::test]
@@ -137,6 +176,5 @@ async fn real_quick_tunnel_downloads_a_porta_served_file() {
 
     server.stop().await.expect("Porta server should stop");
     drop(guard);
-    // SAFETY: signal 0 only checks whether the just-reaped PID still exists.
-    assert_ne!(unsafe { libc::kill(pid as libc::pid_t, 0) }, 0);
+    assert_process_gone(pid);
 }
