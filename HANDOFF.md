@@ -169,7 +169,7 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 - [x] No-internet path: unreachable → `error` "Couldn't reach Cloudflare — check your internet connection and try again."
 - [x] Port shares (`kind:"port"`) tunnel directly to the user's port
 - [x] `copyUrlOnStart` honored
-- [ ] Verify: toggle a real folder share; open the trycloudflare URL from a phone; download a file
+- [~] Verify: toggle a real folder share; open the trycloudflare URL from a phone; download a file
 
 ### M4 — Stats + notifications
 - [ ] Stats middleware: requests, bytes, unique visitors via `Cf-Connecting-Ip`; `stats_updated` event ≤1/s per share
@@ -234,4 +234,4 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 
 ## 10. Blockers (append-only)
 
-*(empty)*
+- [~] **M3 live phone verification (2026-07-15):** macOS Accessibility permission blocked automated interaction with the running Porta window. Two runs of `cargo test --test live_tunnel_smoke -- --ignored --nocapture` started Porta's real file server, launched the bundled cloudflared, received valid Quick Tunnel URLs, and left zero orphan processes, but this environment retained negative DNS results after `1.1.1.1` resolved the host; direct edge-IP download also timed out. Re-run the ignored smoke test on an unrestricted network, then open its printed URL on a phone and download the fixture.
