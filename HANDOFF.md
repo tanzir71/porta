@@ -174,7 +174,7 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 ### M4 — Stats + notifications
 - [x] Stats middleware: requests, bytes, unique visitors via `Cf-Connecting-Ip`; `stats_updated` event ≤1/s per share
 - [x] `notifyOnFirstVisitor` fires native notification once per session per share
-- [ ] Verify: hit share from two IPs (phone on cellular) → visitors=2 in UI
+- [~] Verify: hit share from two IPs (phone on cellular) → visitors=2 in UI
 
 ### M5 — Resident app: tray, login, drag-drop
 - [ ] Tray icon (template image, correct dark-mode) with menu: per-share rows "● Client Mockups — Copy link / Turn off", "Share a folder…", "Open Porta", separator, "Quit Porta"
@@ -235,3 +235,4 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 ## 10. Blockers (append-only)
 
 - [~] **M3 live phone verification (2026-07-15):** macOS Accessibility permission blocked automated interaction with the running Porta window. Two runs of `cargo test --test live_tunnel_smoke -- --ignored --nocapture` started Porta's real file server, launched the bundled cloudflared, received valid Quick Tunnel URLs, and left zero orphan processes, but this environment retained negative DNS results after `1.1.1.1` resolved the host; direct edge-IP download also timed out. Re-run the ignored smoke test on an unrestricted network, then open its printed URL on a phone and download the fixture.
+- [~] **M4 cellular stats verification (2026-07-15):** `cargo test server::tests::counts_requests_streamed_bytes_and_unique_cloudflare_visitors -- --exact` passes and proves two distinct `Cf-Connecting-Ip` values produce `visitors=2`, but a physical cellular phone is unavailable and the M3 public-tunnel blocker prevents an honest UI/device check. After resolving M3, load the URL once on Wi-Fi and once on cellular, then confirm the card shows two visitors.
