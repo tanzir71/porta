@@ -154,7 +154,7 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 - [x] Verify: create → quit → relaunch → share persists; delete removes it
 
 ### M2 — Local file server
-- [ ] axum ServeDir per folder share on `127.0.0.1:0`; correct MIME; ETag/Range for media
+- [x] axum ServeDir per folder share on `127.0.0.1:0`; correct MIME; ETag/Range for media
 - [ ] `listing.html` rendered with all placeholders per §7-notes in the template header; dirs-first A→Z; human sizes; breadcrumbs correct at any depth
 - [ ] `showListing:false` → serve `index.html` at `/` or a minimal 403 page if none exists
 - [ ] Path traversal blocked (test with `curl --path-as-is /a/../../etc/passwd` → 404)

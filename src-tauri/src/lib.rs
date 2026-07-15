@@ -1,5 +1,6 @@
 mod commands;
 mod credentials;
+pub mod server;
 pub mod settings;
 pub mod shares;
 pub mod stats;
