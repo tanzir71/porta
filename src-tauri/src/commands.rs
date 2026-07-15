@@ -554,6 +554,13 @@ pub(crate) fn apply_initial_app_settings(app: &AppHandle) -> Result<(), String> 
 
 fn apply_autolaunch(app: &AppHandle, enabled: bool) -> Result<(), String> {
     let autolaunch = app.autolaunch();
+    let current = autolaunch
+        .is_enabled()
+        .map_err(|_| STARTUP_ERROR.to_owned())?;
+    if current == enabled {
+        return Ok(());
+    }
+
     if enabled {
         autolaunch.enable()
     } else {

@@ -103,9 +103,16 @@ jobs:
           $helper = Get-ChildItem $appRoot -Recurse -Filter "cloudflared*.exe" | Select-Object -First 1
           if (-not $helper) { throw "Bundled cloudflared helper is missing from the installation" }
 
-          $porta = Start-Process -FilePath $appExe -PassThru
+          $stdout = Join-Path $env:RUNNER_TEMP "porta-stdout.log"
+          $stderr = Join-Path $env:RUNNER_TEMP "porta-stderr.log"
+          $porta = Start-Process -FilePath $appExe -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
           Start-Sleep -Seconds 5
-          if ($porta.HasExited) { throw "Installed Porta exited during startup" }
+          if ($porta.HasExited) {
+            Write-Host "Porta exit code: $($porta.ExitCode)"
+            if (Test-Path $stdout) { Get-Content $stdout }
+            if (Test-Path $stderr) { Get-Content $stderr }
+            throw "Installed Porta exited during startup"
+          }
           Start-Process -FilePath $appExe -ArgumentList "--quit" -Wait
           if (-not $porta.WaitForExit(15000)) { throw "Porta did not quit cleanly" }
           Start-Sleep -Seconds 2
@@ -121,6 +128,7 @@ jobs:
           if (Test-Path $appExe) { throw "Porta executable remains after uninstall" }
 
       - name: Upload Windows release assets
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: porta-windows-${{ env.RELEASE_VERSION }}

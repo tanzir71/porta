@@ -66,7 +66,8 @@ pub fn run() {
             commands::update_settings,
         ])
         .run(tauri::generate_context!())
-        .unwrap_or_else(|_| {
+        .unwrap_or_else(|error| {
+            eprintln!("Porta startup detail: {error}");
             eprintln!(
                 "Porta couldn't start. Quit and reopen Porta. If it still won't open, reinstall Porta."
             );
