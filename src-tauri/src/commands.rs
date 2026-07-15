@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use chrono::{SecondsFormat, Utc};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, Runtime, State};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::{
     credentials,
     settings::{Settings, SettingsPatch},
-    shares::{CreateShareInput, Share, ShareKind, ShareStatus, UpdateShareInput},
+    shares::{AppEvent, CreateShareInput, Share, ShareKind, ShareStatus, UpdateShareInput},
     stats::ShareStats,
     store::Store,
 };
@@ -26,6 +26,7 @@ pub(crate) fn list_shares(store: State<'_, Store>) -> Result<Vec<Share>, String>
 
 #[tauri::command]
 pub(crate) fn create_share(
+    app: AppHandle,
     store: State<'_, Store>,
     input: CreateShareInput,
 ) -> Result<Share, String> {
@@ -45,11 +46,19 @@ pub(crate) fn create_share(
         let _ = credentials::replace_password(&share.id, None);
     }
 
-    save_result
+    let saved = save_result?;
+    emit_app_event(
+        &app,
+        AppEvent::ShareChanged {
+            share: saved.clone(),
+        },
+    )?;
+    Ok(saved)
 }
 
 #[tauri::command]
 pub(crate) fn update_share(
+    app: AppHandle,
     store: State<'_, Store>,
     id: String,
     patch: UpdateShareInput,
@@ -79,11 +88,22 @@ pub(crate) fn update_share(
         let _ = credentials::replace_password(&id, previous_password.as_deref());
     }
 
-    save_result
+    let saved = save_result?;
+    emit_app_event(
+        &app,
+        AppEvent::ShareChanged {
+            share: saved.clone(),
+        },
+    )?;
+    Ok(saved)
 }
 
 #[tauri::command]
-pub(crate) fn delete_share(store: State<'_, Store>, id: String) -> Result<(), String> {
+pub(crate) fn delete_share(
+    app: AppHandle,
+    store: State<'_, Store>,
+    id: String,
+) -> Result<(), String> {
     let previous_password = credentials::get_password(&id)?;
     credentials::replace_password(&id, None)?;
 
@@ -100,7 +120,8 @@ pub(crate) fn delete_share(store: State<'_, Store>, id: String) -> Result<(), St
         let _ = credentials::replace_password(&id, previous_password.as_deref());
     }
 
-    delete_result
+    delete_result?;
+    emit_app_event(&app, AppEvent::ShareRemoved { id })
 }
 
 #[tauri::command]
@@ -268,6 +289,13 @@ fn path_to_string(path: PathBuf) -> Result<String, String> {
     })
 }
 
+fn emit_app_event<R: Runtime>(app: &AppHandle<R>, event: AppEvent) -> Result<(), String> {
+    app.emit("app_event", event).map_err(|_| {
+        "Porta saved the change but couldn't refresh its windows. Close and reopen the window to see it."
+            .to_owned()
+    })
+}
+
 fn apply_settings_patch(settings: &Settings, patch: &SettingsPatch) -> Settings {
     Settings {
         launch_at_login: patch.launch_at_login.unwrap_or(settings.launch_at_login),
@@ -318,12 +346,16 @@ fn apply_setting_side_effects(
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::HashSet, sync::mpsc, time::Duration};
+
+    use serde_json::Value;
+    use tauri::{Listener, WebviewWindowBuilder};
     use tempfile::tempdir;
 
-    use super::{apply_settings_patch, apply_share_patch, build_share};
+    use super::{apply_settings_patch, apply_share_patch, build_share, emit_app_event};
     use crate::{
         settings::{Settings, SettingsPatch, Theme},
-        shares::{CreateShareInput, ShareKind, ShareStatus, UpdateShareInput},
+        shares::{AppEvent, CreateShareInput, ShareKind, ShareStatus, UpdateShareInput},
     };
 
     #[test]
@@ -394,5 +426,59 @@ mod tests {
         assert_eq!(next.auto_start_shares, settings.auto_start_shares);
         assert_eq!(next.show_dock_icon, settings.show_dock_icon);
         assert_eq!(next.copy_url_on_start, settings.copy_url_on_start);
+    }
+
+    #[test]
+    fn broadcasts_share_changes_to_every_open_window() {
+        let app = tauri::test::mock_app();
+        let first = WebviewWindowBuilder::new(&app, "first", Default::default())
+            .build()
+            .expect("first mock window should open");
+        let second = WebviewWindowBuilder::new(&app, "second", Default::default())
+            .build()
+            .expect("second mock window should open");
+        let (sender, receiver) = mpsc::channel();
+        let first_sender = sender.clone();
+
+        first.listen("app_event", move |event| {
+            first_sender
+                .send(("first", event.payload().to_owned()))
+                .expect("first listener should report the event");
+        });
+        second.listen("app_event", move |event| {
+            sender
+                .send(("second", event.payload().to_owned()))
+                .expect("second listener should report the event");
+        });
+
+        let share = build_share(&CreateShareInput {
+            kind: ShareKind::Port,
+            path: None,
+            port: Some(4173),
+            name: Some("Preview".to_owned()),
+            password: None,
+            show_listing: None,
+            allow_uploads: None,
+            auto_start: None,
+            start_now: None,
+        })
+        .expect("port share should be valid");
+        let event = AppEvent::ShareChanged { share };
+        let expected = serde_json::to_value(&event).expect("event should serialize");
+
+        emit_app_event(app.handle(), event).expect("event should broadcast");
+
+        let mut labels = HashSet::new();
+        for _ in 0..2 {
+            let (label, payload) = receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("both windows should receive the event");
+            labels.insert(label);
+            assert_eq!(
+                serde_json::from_str::<Value>(&payload).expect("payload should be JSON"),
+                expected
+            );
+        }
+        assert_eq!(labels, HashSet::from(["first", "second"]));
     }
 }
