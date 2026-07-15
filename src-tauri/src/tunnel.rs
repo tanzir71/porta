@@ -96,7 +96,7 @@ impl Default for TunnelManager {
 }
 
 impl TunnelManager {
-    pub async fn start(&self, app: &AppHandle, share: Share) -> Result<(), String> {
+    pub async fn start<R: Runtime>(&self, app: &AppHandle<R>, share: Share) -> Result<(), String> {
         {
             let mut state = self.state.lock().await;
             if state.pending.contains(&share.id) || state.sessions.contains_key(&share.id) {
@@ -622,6 +622,7 @@ pub(crate) fn transition_share<R: Runtime>(
         },
     )
     .map_err(|_| WINDOW_REFRESH_ERROR.to_owned())?;
+    let _ = crate::tray::refresh(app);
     if let Some(url) = clipboard_url {
         let _ = app.clipboard().write_text(url);
     }

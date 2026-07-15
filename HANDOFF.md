@@ -177,7 +177,7 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 - [~] Verify: hit share from two IPs (phone on cellular) → visitors=2 in UI
 
 ### M5 — Resident app: tray, login, drag-drop
-- [ ] Tray icon (template image, correct dark-mode) with menu: per-share rows "● Client Mockups — Copy link / Turn off", "Share a folder…", "Open Porta", separator, "Quit Porta"
+- [x] Tray icon (template image, correct dark-mode) with menu: per-share rows "● Client Mockups — Copy link / Turn off", "Share a folder…", "Open Porta", separator, "Quit Porta"
 - [ ] Tray icon state: idle vs ≥1 live share (badge/filled variant)
 - [ ] Window close hides; app keeps serving; dock icon policy follows `showDockIcon` live
 - [ ] `launchAtLogin` via tauri-plugin-autostart verified in System Settings › Login Items

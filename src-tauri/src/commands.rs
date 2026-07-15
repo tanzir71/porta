@@ -96,7 +96,11 @@ pub(crate) async fn stop_share(
     stop_share_in(&app, &tunnels, &id).await
 }
 
-async fn stop_share_in(app: &AppHandle, tunnels: &TunnelManager, id: &str) -> Result<(), String> {
+pub(crate) async fn stop_share_in<R: Runtime>(
+    app: &AppHandle<R>,
+    tunnels: &TunnelManager,
+    id: &str,
+) -> Result<(), String> {
     let store = app.state::<Store>();
     store.read(|shares, _| {
         shares
@@ -111,7 +115,11 @@ async fn stop_share_in(app: &AppHandle, tunnels: &TunnelManager, id: &str) -> Re
     Ok(())
 }
 
-async fn start_share_in(app: &AppHandle, tunnels: &TunnelManager, id: &str) -> Result<(), String> {
+pub(crate) async fn start_share_in<R: Runtime>(
+    app: &AppHandle<R>,
+    tunnels: &TunnelManager,
+    id: &str,
+) -> Result<(), String> {
     let store = app.state::<Store>();
     let current = store.read(|shares, _| {
         shares
@@ -224,6 +232,10 @@ fn delete_share_in<R: Runtime>(
 
 #[tauri::command]
 pub(crate) async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
+    pick_folder_in(&app)
+}
+
+pub(crate) fn pick_folder_in<R: Runtime>(app: &AppHandle<R>) -> Result<Option<String>, String> {
     let selected = app
         .dialog()
         .file()
@@ -391,7 +403,9 @@ fn emit_app_event<R: Runtime>(app: &AppHandle<R>, event: AppEvent) -> Result<(),
     app.emit("app_event", event).map_err(|_| {
         "Porta saved the change but couldn't refresh its windows. Close and reopen the window to see it."
             .to_owned()
-    })
+    })?;
+    let _ = crate::tray::refresh(app);
+    Ok(())
 }
 
 fn apply_settings_patch(settings: &Settings, patch: &SettingsPatch) -> Settings {

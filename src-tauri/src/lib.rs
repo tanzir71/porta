@@ -5,6 +5,7 @@ pub mod settings;
 pub mod shares;
 pub mod stats;
 pub mod store;
+mod tray;
 mod tunnel;
 
 use store::Store;
@@ -26,6 +27,7 @@ pub fn run() {
         .setup(|app| {
             let store = Store::load(app.handle()).map_err(std::io::Error::other)?;
             tauri::Manager::manage(app, store);
+            tray::setup(app.handle()).map_err(std::io::Error::other)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
