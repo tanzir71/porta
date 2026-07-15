@@ -9,6 +9,7 @@ mod tray;
 mod tunnel;
 
 use store::Store;
+use tauri::WindowEvent;
 use tunnel::TunnelManager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -27,8 +28,15 @@ pub fn run() {
         .setup(|app| {
             let store = Store::load(app.handle()).map_err(std::io::Error::other)?;
             tauri::Manager::manage(app, store);
+            commands::apply_initial_window_settings(app.handle()).map_err(std::io::Error::other)?;
             tray::setup(app.handle()).map_err(std::io::Error::other)?;
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_shares,

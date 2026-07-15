@@ -443,17 +443,48 @@ fn apply_setting_side_effects(
 
     #[cfg(target_os = "macos")]
     if previous.show_dock_icon != next.show_dock_icon {
-        let policy = if next.show_dock_icon {
-            tauri::ActivationPolicy::Regular
-        } else {
-            tauri::ActivationPolicy::Accessory
-        };
-        app.set_activation_policy(policy).map_err(|_| {
-            "Porta couldn't update the Dock icon. Quit and reopen Porta, then try again.".to_owned()
-        })?;
+        apply_dock_policy(app, next.show_dock_icon)?;
     }
 
     Ok(())
+}
+
+pub(crate) fn apply_initial_window_settings(app: &AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let show_dock_icon = app
+            .state::<Store>()
+            .read(|_, settings| settings.show_dock_icon)?;
+        apply_dock_policy(app, show_dock_icon)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn apply_dock_policy(app: &AppHandle, show_dock_icon: bool) -> Result<(), String> {
+    let policy = match dock_policy(show_dock_icon) {
+        DockPolicy::Regular => tauri::ActivationPolicy::Regular,
+        DockPolicy::Accessory => tauri::ActivationPolicy::Accessory,
+    };
+    app.set_activation_policy(policy).map_err(|_| {
+        "Porta couldn't update the Dock icon. Quit and reopen Porta, then try again.".to_owned()
+    })
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, PartialEq, Eq)]
+enum DockPolicy {
+    Regular,
+    Accessory,
+}
+
+#[cfg(target_os = "macos")]
+fn dock_policy(show_dock_icon: bool) -> DockPolicy {
+    if show_dock_icon {
+        DockPolicy::Regular
+    } else {
+        DockPolicy::Accessory
+    }
 }
 
 #[cfg(test)]
@@ -542,6 +573,13 @@ mod tests {
         assert_eq!(next.auto_start_shares, settings.auto_start_shares);
         assert_eq!(next.show_dock_icon, settings.show_dock_icon);
         assert_eq!(next.copy_url_on_start, settings.copy_url_on_start);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dock_visibility_maps_to_the_expected_live_activation_policy() {
+        assert_eq!(super::dock_policy(true), super::DockPolicy::Regular);
+        assert_eq!(super::dock_policy(false), super::DockPolicy::Accessory);
     }
 
     #[test]
