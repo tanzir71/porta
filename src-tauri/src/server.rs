@@ -26,6 +26,7 @@ const START_ERROR: &str =
 const STOP_ERROR: &str =
     "Porta couldn't stop the local server cleanly. Quit Porta before sharing it again.";
 const LISTING_TEMPLATE: &str = include_str!("../../server-templates/listing.html");
+const LISTING_DISABLED_PAGE: &str = r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Folder browsing is off</title></head><body><main><h1>Folder browsing is off</h1><p>Ask the person sharing this folder for a direct link to a file.</p></main></body></html>"#;
 const FOLDER_SVG: &str = r#"<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 19V6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>"#;
 const FILE_SVG: &str = r#"<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 2h8l4 4v16H6V2Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 2v5h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>"#;
 
@@ -33,6 +34,7 @@ const FILE_SVG: &str = r#"<svg width="20" height="20" viewBox="0 0 24 24" fill="
 pub struct FileServerConfig {
     root: PathBuf,
     share_name: String,
+    show_listing: bool,
     allow_uploads: bool,
 }
 
@@ -42,8 +44,15 @@ impl FileServerConfig {
         Self {
             root: root.into(),
             share_name: share_name.into(),
+            show_listing: true,
             allow_uploads: false,
         }
+    }
+
+    /// Controls whether visitors may browse directory contents.
+    pub fn show_listing(mut self, show_listing: bool) -> Self {
+        self.show_listing = show_listing;
+        self
     }
 
     /// Controls whether the listing shows its upload widget.
@@ -57,6 +66,7 @@ impl FileServerConfig {
 struct ListingState {
     root: PathBuf,
     share_name: String,
+    show_listing: bool,
     allow_uploads: bool,
 }
 
@@ -94,6 +104,7 @@ impl FileServer {
         let listing_state = ListingState {
             root: root.clone(),
             share_name: config.share_name,
+            show_listing: config.show_listing,
             allow_uploads: config.allow_uploads,
         };
         let app = Router::new()
@@ -166,6 +177,23 @@ async fn serve_directory_listing(
     };
     if !directory.is_dir() {
         return next.run(request).await;
+    }
+
+    if !state.show_listing {
+        let has_safe_root_index = if request_path == "/" {
+            match resolve_request_path(&state.root, "/index.html").await {
+                Some(index) => tokio::fs::metadata(index)
+                    .await
+                    .is_ok_and(|metadata| metadata.is_file()),
+                None => false,
+            }
+        } else {
+            false
+        };
+        if has_safe_root_index {
+            return next.run(request).await;
+        }
+        return (StatusCode::FORBIDDEN, Html(LISTING_DISABLED_PAGE)).into_response();
     }
 
     if !request_path.ends_with('/') {
@@ -555,5 +583,60 @@ mod tests {
         assert!(nested_html.contains(r#"<span class="dt">"#));
 
         server.stop().await.expect("listing server should stop");
+    }
+
+    #[tokio::test]
+    async fn disabled_listing_serves_only_a_root_index_or_direct_files() {
+        let site_root = tempdir().expect("site folder should be created");
+        tokio::fs::write(
+            site_root.path().join("index.html"),
+            b"<!doctype html><h1>Portfolio</h1>",
+        )
+        .await
+        .expect("site index should be written");
+        tokio::fs::write(site_root.path().join("resume.pdf"), b"resume")
+            .await
+            .expect("direct file should be written");
+        tokio::fs::create_dir(site_root.path().join("private"))
+            .await
+            .expect("nested directory should be created");
+
+        let site = FileServer::start(
+            FileServerConfig::new(site_root.path(), "Portfolio").show_listing(false),
+        )
+        .await
+        .expect("site server should start");
+        let landing = request(site.address(), "/", &[]).await;
+        assert_eq!(landing.status, 200);
+        assert_eq!(landing.body, b"<!doctype html><h1>Portfolio</h1>");
+        let direct_file = request(site.address(), "/resume.pdf", &[]).await;
+        assert_eq!(direct_file.status, 200);
+        assert_eq!(direct_file.body, b"resume");
+        let nested = request(site.address(), "/private/", &[]).await;
+        assert_eq!(nested.status, 403);
+
+        let files_root = tempdir().expect("file folder should be created");
+        tokio::fs::write(files_root.path().join("known.txt"), b"known")
+            .await
+            .expect("known file should be written");
+        let files = FileServer::start(
+            FileServerConfig::new(files_root.path(), "Files").show_listing(false),
+        )
+        .await
+        .expect("file server should start");
+        let forbidden = request(files.address(), "/", &[]).await;
+        assert_eq!(forbidden.status, 403);
+        assert_eq!(
+            forbidden.headers.get("content-type").map(String::as_str),
+            Some("text/html; charset=utf-8")
+        );
+        let forbidden_html =
+            String::from_utf8(forbidden.body).expect("403 page should be UTF-8 HTML");
+        assert!(forbidden_html.contains("Folder browsing is off"));
+        assert!(forbidden_html.contains("Ask the person sharing this folder"));
+        assert!(!forbidden_html.contains("known.txt"));
+
+        site.stop().await.expect("site server should stop");
+        files.stop().await.expect("file server should stop");
     }
 }

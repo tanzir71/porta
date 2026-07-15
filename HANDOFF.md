@@ -156,7 +156,7 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 ### M2 — Local file server
 - [x] axum ServeDir per folder share on `127.0.0.1:0`; correct MIME; ETag/Range for media
 - [x] `listing.html` rendered with all placeholders per §7-notes in the template header; dirs-first A→Z; human sizes; breadcrumbs correct at any depth
-- [ ] `showListing:false` → serve `index.html` at `/` or a minimal 403 page if none exists
+- [x] `showListing:false` → serve `index.html` at `/` or a minimal 403 page if none exists
 - [ ] Path traversal blocked (test with `curl --path-as-is /a/../../etc/passwd` → 404)
 - [ ] basic-auth middleware when password set (realm "Porta"); password stored/read via Keychain
 - [ ] uploads: multipart POST to current dir when `allowUploads`; collision-safe; 303 redirect back
