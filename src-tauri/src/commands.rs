@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use chrono::{SecondsFormat, Utc};
-use tauri::{AppHandle, Emitter, Runtime, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
@@ -14,6 +14,7 @@ use crate::{
     shares::{AppEvent, CreateShareInput, Share, ShareKind, ShareStatus, UpdateShareInput},
     stats::ShareStats,
     store::Store,
+    tunnel::{self, TunnelManager},
 };
 
 const MISSING_SHARE: &str = "That share no longer exists. Return to the main window and try again.";
@@ -25,12 +26,25 @@ pub(crate) fn list_shares(store: State<'_, Store>) -> Result<Vec<Share>, String>
 }
 
 #[tauri::command]
-pub(crate) fn create_share(
+pub(crate) async fn create_share(
     app: AppHandle,
     store: State<'_, Store>,
+    tunnels: State<'_, TunnelManager>,
     input: CreateShareInput,
 ) -> Result<Share, String> {
-    create_share_in(&app, &store, input)
+    let start_now = input.start_now.unwrap_or(true);
+    let saved = create_share_in(&app, &store, input)?;
+    if start_now {
+        let _ = start_share_in(&app, &tunnels, &saved.id).await;
+        return store.read(|shares, _| {
+            shares
+                .iter()
+                .find(|share| share.id == saved.id)
+                .cloned()
+                .unwrap_or(saved)
+        });
+    }
+    Ok(saved)
 }
 
 fn create_share_in<R: Runtime>(
@@ -62,6 +76,36 @@ fn create_share_in<R: Runtime>(
         },
     )?;
     Ok(saved)
+}
+
+#[tauri::command]
+pub(crate) async fn start_share(
+    app: AppHandle,
+    tunnels: State<'_, TunnelManager>,
+    id: String,
+) -> Result<(), String> {
+    start_share_in(&app, &tunnels, &id).await
+}
+
+async fn start_share_in(app: &AppHandle, tunnels: &TunnelManager, id: &str) -> Result<(), String> {
+    let store = app.state::<Store>();
+    let current = store.read(|shares, _| {
+        shares
+            .iter()
+            .find(|share| share.id == id)
+            .cloned()
+            .ok_or_else(|| MISSING_SHARE.to_owned())
+    })??;
+    if matches!(current.status, ShareStatus::Starting | ShareStatus::Live) {
+        return Ok(());
+    }
+
+    let starting = tunnel::transition_share(app, id, ShareStatus::Starting, None, None)?;
+    if let Err(error) = tunnels.start(app, starting).await {
+        tunnel::transition_share(app, id, ShareStatus::Error, None, Some(error.clone()))?;
+        return Err(error);
+    }
+    Ok(())
 }
 
 #[tauri::command]

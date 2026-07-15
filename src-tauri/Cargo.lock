@@ -2797,6 +2797,7 @@ dependencies = [
  "chrono",
  "keyring",
  "percent-encoding",
+ "regex",
  "serde",
  "serde_json",
  "subtle",

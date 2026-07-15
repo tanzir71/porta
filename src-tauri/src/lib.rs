@@ -5,12 +5,15 @@ pub mod settings;
 pub mod shares;
 pub mod stats;
 pub mod store;
+mod tunnel;
 
 use store::Store;
+use tunnel::TunnelManager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(TunnelManager::default())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -26,6 +29,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::list_shares,
             commands::create_share,
+            commands::start_share,
             commands::delete_share,
             commands::update_share,
             commands::pick_folder,

@@ -163,7 +163,7 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 - [x] Verify: integration test hits a temp dir share: listing renders, file downloads byte-identical, traversal 404s, wrong password 401s
 
 ### M3 — Tunnel lifecycle
-- [ ] TunnelManager spawns sidecar `cloudflared tunnel --url http://127.0.0.1:{port} --no-autoupdate`, parses URL ≤30 s, transitions `starting→live` with URL via event
+- [x] TunnelManager spawns sidecar `cloudflared tunnel --url http://127.0.0.1:{port} --no-autoupdate`, parses URL ≤30 s, transitions `starting→live` with URL via event
 - [ ] `stop_share` tears down child processes — zero orphan `cloudflared` after quit (verify `pgrep cloudflared`)
 - [ ] Crash supervision with backoff per §3; 3 strikes → `error` + friendly message
 - [ ] No-internet path: unreachable → `error` "Couldn't reach Cloudflare — check your internet connection and try again."
