@@ -3,7 +3,7 @@ use std::{
     net::{Ipv4Addr, SocketAddr},
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, LazyLock,
+        Arc,
     },
     time::Duration,
 };
@@ -11,7 +11,6 @@ use std::{
 #[cfg(unix)]
 use std::io;
 
-use regex::Regex;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_notification::{NotificationExt, PermissionState};
@@ -22,6 +21,11 @@ use tauri_plugin_shell::{
 use tokio::sync::Mutex;
 
 use crate::{
+    credentials,
+    provider::{
+        profile_by_id, ProviderLaunch, ProviderProgram, ProviderTestResult, ResolvedProvider,
+        UrlDiscovery,
+    },
     server::{FileServer, FileServerConfig},
     shares::{AppEvent, Share, ShareKind, ShareStatus},
     stats::{ShareStats, StatsReporter},
@@ -33,35 +37,24 @@ const GRACEFUL_STOP_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_BACKOFF_SECONDS: u64 = 60;
 const MAX_CONSECUTIVE_FAILURES: u8 = 3;
 const ALREADY_RUNNING: &str = "This share is already starting. Wait a moment, then try again.";
-const SIDECAR_MISSING: &str =
-    "Porta couldn't find its tunnel helper. Reinstall Porta, then try again.";
-const SIDECAR_START_ERROR: &str =
-    "Porta couldn't start its tunnel helper. Quit and reopen Porta, then try again.";
-const CLOUDFLARE_ERROR: &str =
-    "Couldn't reach Cloudflare — check your internet connection and try again.";
 const MISSING_SHARE: &str = "That share no longer exists. Return to the main window and try again.";
 const MISSING_PORT: &str =
     "This port share has no port. Edit the share and enter one from 1 to 65535.";
 
 #[cfg(target_os = "windows")]
 const STOP_ERROR: &str =
-    "Porta couldn't stop this share cleanly. Quit Porta, then check Task Manager for cloudflared.";
+    "Porta couldn't stop this share cleanly. Quit Porta, then check Task Manager for its tunnel helper.";
 #[cfg(target_os = "macos")]
 const STOP_ERROR: &str =
-    "Porta couldn't stop this share cleanly. Quit Porta, then check Activity Monitor for cloudflared.";
+    "Porta couldn't stop this share cleanly. Quit Porta, then check Activity Monitor for its tunnel helper.";
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 const STOP_ERROR: &str =
-    "Porta couldn't stop this share cleanly. Quit Porta, then check your system's process manager for cloudflared.";
+    "Porta couldn't stop this share cleanly. Quit Porta, then check your system's process manager for its tunnel helper.";
 const UNSTABLE_TUNNEL_ERROR: &str =
     "The tunnel keeps dropping. Porta will retry when you toggle it back on.";
 const FOLDER_MISSING_ERROR: &str = "This folder was moved or deleted. Pick it again to reshare.";
 const FIRST_VISITOR_BODY: &str = "Someone just opened your link.";
 const WINDOW_REFRESH_ERROR: &str = "Porta saved the change but couldn't refresh its windows. Close and reopen the window to see it.";
-
-static TUNNEL_URL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"https://[a-z0-9-]+\.trycloudflare\.com")
-        .expect("the Cloudflare tunnel URL regex should be valid")
-});
 
 #[derive(Default)]
 struct TunnelState {
@@ -73,6 +66,22 @@ struct TunnelSession {
     generation: u64,
     server: Option<FileServer>,
     child: Option<CommandChild>,
+}
+
+struct SpawnedProvider {
+    receiver: tauri::async_runtime::Receiver<CommandEvent>,
+    child: CommandChild,
+    discovery: UrlDiscovery,
+    connection_error: String,
+}
+
+struct SupervisionContext {
+    share_id: String,
+    generation: u64,
+    origin: SocketAddr,
+    provider: ResolvedProvider,
+    discovery: UrlDiscovery,
+    connection_error: String,
 }
 
 #[derive(Default)]
@@ -122,14 +131,21 @@ impl TunnelManager {
             state.pending.insert(share.id.clone());
         }
 
-        let (origin, server) = match start_local_origin(app, &share).await {
+        let provider = match resolve_provider(app, &share) {
+            Ok(provider) => provider,
+            Err(error) => {
+                self.release_pending(&share.id).await;
+                return Err(error);
+            }
+        };
+        let (origin, server) = match start_local_origin(app, &share, &provider).await {
             Ok(started) => started,
             Err(error) => {
                 self.release_pending(&share.id).await;
                 return Err(error);
             }
         };
-        let (receiver, child) = match spawn_cloudflared(app, origin) {
+        let spawned = match spawn_provider(app, &provider, origin) {
             Ok(process) => process,
             Err(error) => {
                 self.release_pending(&share.id).await;
@@ -149,14 +165,26 @@ impl TunnelManager {
                 TunnelSession {
                     generation,
                     server,
-                    child: Some(child),
+                    child: Some(spawned.child),
                 },
             );
         }
 
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            supervise_tunnel(app, share.id, generation, origin, receiver).await;
+            supervise_tunnel(
+                app,
+                SupervisionContext {
+                    share_id: share.id,
+                    generation,
+                    origin,
+                    provider,
+                    discovery: spawned.discovery,
+                    connection_error: spawned.connection_error,
+                },
+                spawned.receiver,
+            )
+            .await;
         });
         Ok(())
     }
@@ -237,28 +265,32 @@ impl Drop for TunnelManager {
     }
 }
 
-fn cloudflared_args(origin: SocketAddr) -> Vec<String> {
-    vec![
-        "tunnel".to_owned(),
-        "--url".to_owned(),
-        format!("http://{origin}"),
-        "--no-autoupdate".to_owned(),
-    ]
-}
-
 async fn start_local_origin<R: Runtime>(
     app: &AppHandle<R>,
     share: &Share,
+    provider: &ResolvedProvider,
 ) -> Result<(SocketAddr, Option<FileServer>), String> {
     match share.kind {
         ShareKind::Folder => {
             let reporter = stats_reporter(app, share.id.clone());
-            let server =
-                FileServer::start(FileServerConfig::for_share(share)?.stats(reporter)).await?;
+            let server = FileServer::start(
+                FileServerConfig::for_share(share)?
+                    .stats(reporter)
+                    .bind_port(provider.preferred_local_port())
+                    .visitor_headers(provider.visitor_headers()),
+            )
+            .await?;
             Ok((server.address(), Some(server)))
         }
         ShareKind::Port => {
             let port = share.port.ok_or_else(|| MISSING_PORT.to_owned())?;
+            if let Some(expected) = provider.preferred_local_port() {
+                if expected != port {
+                    return Err(format!(
+                        "This provider profile routes to local port {expected}, but this share uses port {port}. Edit the profile or share so the ports match."
+                    ));
+                }
+            }
             Ok((SocketAddr::from((Ipv4Addr::LOCALHOST, port)), None))
         }
     }
@@ -339,16 +371,99 @@ fn first_visitor_notification_title(
         .flatten()
 }
 
-fn spawn_cloudflared<R: Runtime>(
+fn resolve_provider<R: Runtime>(
     app: &AppHandle<R>,
+    share: &Share,
+) -> Result<ResolvedProvider, String> {
+    let store = app.state::<Store>();
+    let profile = store.read_with_providers(|_, settings, profiles| {
+        let id = share
+            .provider_id
+            .as_deref()
+            .unwrap_or(&settings.default_provider_id);
+        profile_by_id(profiles, id)
+    })?;
+    let profile = profile.ok_or_else(|| {
+        "This share's tunnel provider no longer exists. Edit the share and choose another provider."
+            .to_owned()
+    })?;
+    let credential = if profile
+        .kind
+        .requires_credential(profile.credential_env.as_deref())
+    {
+        credentials::get_provider_secret(&profile.id)?
+    } else {
+        None
+    };
+    ResolvedProvider::new(profile, credential)
+}
+
+fn spawn_provider<R: Runtime>(
+    app: &AppHandle<R>,
+    provider: &ResolvedProvider,
     origin: SocketAddr,
-) -> Result<(tauri::async_runtime::Receiver<CommandEvent>, CommandChild), String> {
-    let command = app
-        .shell()
-        .sidecar("cloudflared")
-        .map_err(|_| SIDECAR_MISSING.to_owned())?
-        .args(cloudflared_args(origin));
-    command.spawn().map_err(|_| SIDECAR_START_ERROR.to_owned())
+) -> Result<SpawnedProvider, String> {
+    let ProviderLaunch {
+        program,
+        arguments,
+        environment,
+        discovery,
+        start_error,
+        connection_error,
+    } = provider.launch(origin)?;
+    let command = match program {
+        ProviderProgram::BundledCloudflared => {
+            app.shell().sidecar("cloudflared").map_err(|_| {
+                "Porta couldn't find Cloudflare's tunnel helper. Reinstall Porta, then try again."
+                    .to_owned()
+            })?
+        }
+        ProviderProgram::External(executable) => app.shell().command(executable),
+    }
+    .args(arguments)
+    .envs(environment);
+    let (receiver, child) = command.spawn().map_err(|_| start_error)?;
+    Ok(SpawnedProvider {
+        receiver,
+        child,
+        discovery,
+        connection_error,
+    })
+}
+
+#[cfg(test)]
+const CLOUDFLARE_ERROR: &str =
+    "Couldn't reach Cloudflare — check your internet connection and try again.";
+
+#[cfg(test)]
+fn quick_provider() -> ResolvedProvider {
+    ResolvedProvider::new(crate::provider::cloudflare_quick_profile(), None)
+        .expect("built-in provider should resolve")
+}
+
+#[cfg(test)]
+fn cloudflared_args(origin: SocketAddr) -> Vec<String> {
+    quick_provider()
+        .launch(origin)
+        .expect("built-in provider launch should build")
+        .arguments
+}
+
+#[cfg(test)]
+async fn wait_for_tunnel_url(
+    receiver: &mut tauri::async_runtime::Receiver<CommandEvent>,
+    timeout: Duration,
+) -> Result<String, String> {
+    let launch = quick_provider()
+        .launch("127.0.0.1:43123".parse().expect("origin should parse"))
+        .expect("built-in provider launch should build");
+    wait_for_provider_url(
+        receiver,
+        &launch.discovery,
+        timeout,
+        &launch.connection_error,
+    )
+    .await
 }
 
 fn retry_delay(consecutive_failures: u8) -> Duration {
@@ -358,13 +473,19 @@ fn retry_delay(consecutive_failures: u8) -> Duration {
 
 async fn supervise_tunnel<R: Runtime>(
     app: AppHandle<R>,
-    share_id: String,
-    generation: u64,
-    origin: SocketAddr,
+    context: SupervisionContext,
     mut receiver: tauri::async_runtime::Receiver<CommandEvent>,
 ) {
+    let SupervisionContext {
+        share_id,
+        generation,
+        origin,
+        provider,
+        discovery,
+        connection_error,
+    } = context;
     let manager = app.state::<TunnelManager>();
-    match wait_for_tunnel_url(&mut receiver, URL_TIMEOUT).await {
+    match wait_for_provider_url(&mut receiver, &discovery, URL_TIMEOUT, &connection_error).await {
         Ok(url) => {
             if !manager.is_current(&share_id, generation).await {
                 return;
@@ -411,7 +532,7 @@ async fn supervise_tunnel<R: Runtime>(
                 return;
             }
 
-            let (mut next_receiver, child) = match spawn_cloudflared(&app, origin) {
+            let spawned = match spawn_provider(&app, &provider, origin) {
                 Ok(process) => process,
                 Err(_) => {
                     let Some(next_delay) = retries.fail() else {
@@ -422,12 +543,23 @@ async fn supervise_tunnel<R: Runtime>(
                     continue;
                 }
             };
-            if let Err(child) = manager.install_child(&share_id, generation, child).await {
+            if let Err(child) = manager
+                .install_child(&share_id, generation, spawned.child)
+                .await
+            {
                 let _ = terminate_child(child).await;
                 return;
             }
 
-            match wait_for_tunnel_url(&mut next_receiver, URL_TIMEOUT).await {
+            let mut next_receiver = spawned.receiver;
+            match wait_for_provider_url(
+                &mut next_receiver,
+                &spawned.discovery,
+                URL_TIMEOUT,
+                &spawned.connection_error,
+            )
+            .await
+            {
                 Ok(url) => {
                     if !manager.is_current(&share_id, generation).await {
                         return;
@@ -657,33 +789,103 @@ fn process_is_running(_pid: u32) -> bool {
     false
 }
 
-async fn wait_for_tunnel_url(
+async fn wait_for_provider_url(
     receiver: &mut tauri::async_runtime::Receiver<CommandEvent>,
+    discovery: &UrlDiscovery,
     timeout: Duration,
+    connection_error: &str,
 ) -> Result<String, String> {
-    tokio::time::timeout(timeout, async move {
-        let mut stderr = String::new();
-        while let Some(event) = receiver.recv().await {
-            match event {
-                CommandEvent::Stderr(bytes) => {
-                    stderr.push_str(&String::from_utf8_lossy(&bytes));
-                    if let Some(found) = TUNNEL_URL.find(&stderr) {
-                        return Ok(found.as_str().to_owned());
-                    }
-                    if stderr.len() > 64 * 1024 {
-                        stderr.clear();
-                    }
+    let started = tokio::time::Instant::now();
+    let deadline = started + timeout;
+    let fixed_deadline = discovery.fixed_delay().map(|delay| started + delay);
+    let mut output = String::new();
+
+    loop {
+        let wake_at = fixed_deadline.map_or(deadline, |fixed| fixed.min(deadline));
+        match tokio::time::timeout_at(wake_at, receiver.recv()).await {
+            Ok(Some(CommandEvent::Stdout(bytes) | CommandEvent::Stderr(bytes))) => {
+                output.push_str(&String::from_utf8_lossy(&bytes));
+                if let Some(url) = discovery.inspect(&output) {
+                    return Ok(url);
                 }
-                CommandEvent::Error(_) | CommandEvent::Terminated(_) => {
-                    return Err(CLOUDFLARE_ERROR.to_owned());
+                if output.len() > 64 * 1024 {
+                    let mut keep_from = output.len().saturating_sub(32 * 1024);
+                    while keep_from < output.len() && !output.is_char_boundary(keep_from) {
+                        keep_from += 1;
+                    }
+                    output.drain(..keep_from);
                 }
-                _ => {}
+            }
+            Ok(Some(CommandEvent::Error(_) | CommandEvent::Terminated(_))) | Ok(None) => {
+                return Err(connection_error.to_owned());
+            }
+            Ok(Some(_)) => {}
+            Err(_) => {
+                if fixed_deadline.is_some_and(|fixed| fixed <= tokio::time::Instant::now()) {
+                    return discovery
+                        .fixed_url()
+                        .ok_or_else(|| connection_error.to_owned());
+                }
+                return Err(connection_error.to_owned());
             }
         }
-        Err(CLOUDFLARE_ERROR.to_owned())
+    }
+}
+
+pub(crate) async fn test_provider_connection<R: Runtime>(
+    app: &AppHandle<R>,
+    provider: ResolvedProvider,
+) -> Result<ProviderTestResult, String> {
+    use tokio::io::AsyncWriteExt;
+
+    let port = provider.preferred_local_port().unwrap_or(0);
+    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+        .await
+        .map_err(|_| match provider.preferred_local_port() {
+            Some(port) => format!(
+                "Porta couldn't use local port {port} for the provider test. Stop the app using it, then try again."
+            ),
+            None => "Porta couldn't start the provider test server. Quit and reopen Porta, then try again."
+                .to_owned(),
+        })?;
+    let origin = listener.local_addr().map_err(|_| {
+        "Porta couldn't read the provider test address. Quit and reopen Porta, then try again."
+            .to_owned()
+    })?;
+    let origin_task = tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let _ = stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 19\r\nConnection: close\r\n\r\nPorta provider test",
+                )
+                .await;
+        }
+    });
+
+    let mut spawned = match spawn_provider(app, &provider, origin) {
+        Ok(spawned) => spawned,
+        Err(error) => {
+            origin_task.abort();
+            return Err(error);
+        }
+    };
+    let result = wait_for_provider_url(
+        &mut spawned.receiver,
+        &spawned.discovery,
+        URL_TIMEOUT,
+        &spawned.connection_error,
+    )
+    .await;
+    let stopped = terminate_child(spawned.child).await;
+    origin_task.abort();
+    if !stopped {
+        return Err(STOP_ERROR.to_owned());
+    }
+    let url = result?;
+    Ok(ProviderTestResult {
+        message: format!("{} connected successfully.", provider.profile.name),
+        url,
     })
-    .await
-    .unwrap_or_else(|_| Err(CLOUDFLARE_ERROR.to_owned()))
 }
 
 #[cfg(test)]
@@ -784,25 +986,28 @@ fn url_to_copy(share: &Share, copy_url_on_start: bool) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::mpsc, time::Duration};
+    use std::{fs, process::Command as StdCommand, sync::mpsc, time::Duration};
 
     #[cfg(unix)]
     use std::process::Command;
 
+    use regex::Regex;
     use tauri::{Listener, Manager};
     use tauri_plugin_shell::{process::CommandEvent, ShellExt};
     use tempfile::tempdir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::{
-        cloudflared_args, first_visitor_notification_title, retry_delay, start_local_origin,
-        stats_reporter, supervise_tunnel, transition_share, url_to_copy, wait_for_process_end,
-        wait_for_tunnel_url, RetryState, CLOUDFLARE_ERROR, FIRST_VISITOR_BODY,
-        FOLDER_MISSING_ERROR, UNSTABLE_TUNNEL_ERROR, URL_TIMEOUT,
+        cloudflared_args, first_visitor_notification_title, quick_provider, retry_delay,
+        start_local_origin, stats_reporter, supervise_tunnel, transition_share, url_to_copy,
+        wait_for_process_end, wait_for_provider_url, wait_for_tunnel_url, RetryState, UrlDiscovery,
+        CLOUDFLARE_ERROR, FIRST_VISITOR_BODY, FOLDER_MISSING_ERROR, UNSTABLE_TUNNEL_ERROR,
+        URL_TIMEOUT,
     };
     #[cfg(unix)]
     use super::{send_signal, wait_for_process_exit};
     use crate::{
+        provider::{build_profile, ProviderKind, ResolvedProvider, SaveProviderProfileInput},
         server::{FileServer, FileServerConfig},
         shares::ShareStatus,
         store::Store,
@@ -877,6 +1082,108 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn provider_output_trimming_preserves_unicode_boundaries() {
+        let (sender, mut receiver) = tauri::async_runtime::channel(2);
+        sender
+            .send(CommandEvent::Stdout("€".repeat(22_000).into_bytes()))
+            .await
+            .expect("large Unicode output should send");
+        sender
+            .send(CommandEvent::Stdout(
+                b"https://unicode-safe.example.com".to_vec(),
+            ))
+            .await
+            .expect("public URL should send");
+        drop(sender);
+        let discovery = UrlDiscovery::Output {
+            pattern: Regex::new(r"(?P<url>https://[A-Za-z0-9.-]+\.example\.com)")
+                .expect("test pattern should compile"),
+            fixed_url: None,
+        };
+
+        assert_eq!(
+            wait_for_provider_url(
+                &mut receiver,
+                &discovery,
+                Duration::from_millis(100),
+                "provider failed",
+            )
+            .await
+            .expect("URL after large Unicode output should be discovered"),
+            "https://unicode-safe.example.com"
+        );
+    }
+
+    #[tokio::test]
+    async fn custom_provider_test_launches_directly_and_leaves_no_process() {
+        let directory = tempdir().expect("temporary provider directory should be created");
+        let source = directory.path().join("fake_provider.rs");
+        let executable = directory.path().join(if cfg!(windows) {
+            "fake-provider.exe"
+        } else {
+            "fake-provider"
+        });
+        let pid_file = directory.path().join("provider.pid");
+        fs::write(
+            &source,
+            r#"use std::{env, fs, process, thread, time::Duration};
+fn main() {
+    let pid_file = env::args().nth(1).expect("pid file argument");
+    fs::write(pid_file, process::id().to_string()).expect("write pid");
+    println!("https://porta-provider-test.example.com");
+    thread::sleep(Duration::from_secs(60));
+}
+"#,
+        )
+        .expect("fake provider source should be written");
+        let compiled = StdCommand::new("rustc")
+            .arg(&source)
+            .arg("-o")
+            .arg(&executable)
+            .status()
+            .expect("rustc should compile the fake provider");
+        assert!(compiled.success(), "fake provider should compile");
+
+        let profile = build_profile(
+            SaveProviderProfileInput {
+                id: None,
+                name: "Lifecycle test provider".to_owned(),
+                kind: ProviderKind::Custom,
+                executable: Some(executable.to_string_lossy().into_owned()),
+                arguments: vec![pid_file.to_string_lossy().into_owned()],
+                public_url: None,
+                url_pattern: Some(r"(?P<url>https://[A-Za-z0-9.-]+\.example\.com)".to_owned()),
+                credential_env: None,
+                forwarded_ip_header: None,
+                local_port: None,
+                credential: None,
+                clear_credential: false,
+            },
+            None,
+        )
+        .expect("fake provider profile should validate");
+        let provider =
+            ResolvedProvider::new(profile, None).expect("credential-free provider should resolve");
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_shell::init())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app should build");
+
+        let result = super::test_provider_connection(app.handle(), provider)
+            .await
+            .expect("fake provider test should connect");
+        assert_eq!(result.url, "https://porta-provider-test.example.com");
+        let pid: u32 = fs::read_to_string(&pid_file)
+            .expect("fake provider should record its pid")
+            .parse()
+            .expect("fake provider pid should be numeric");
+        assert!(
+            !super::process_is_running(pid),
+            "provider test must stop its child process"
+        );
+    }
+
+    #[tokio::test]
     async fn port_shares_use_the_users_loopback_port_without_an_axum_server() {
         let app = tauri::test::mock_builder()
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -890,7 +1197,8 @@ mod tests {
         share.path = None;
         share.port = Some(4173);
 
-        let (origin, server) = start_local_origin(app.handle(), &share)
+        let provider = quick_provider();
+        let (origin, server) = start_local_origin(app.handle(), &share, &provider)
             .await
             .expect("port origin should be created");
 
@@ -908,7 +1216,7 @@ mod tests {
 
         share.port = None;
         assert_eq!(
-            start_local_origin(app.handle(), &share)
+            start_local_origin(app.handle(), &share, &provider)
                 .await
                 .err()
                 .as_deref(),
@@ -1128,11 +1436,20 @@ mod tests {
             .expect("failure event should send");
         drop(event_sender);
 
+        let provider = quick_provider();
+        let launch = provider
+            .launch(origin)
+            .expect("built-in provider launch should build");
         supervise_tunnel(
             app.handle().clone(),
-            share_id.clone(),
-            1,
-            origin,
+            super::SupervisionContext {
+                share_id: share_id.clone(),
+                generation: 1,
+                origin,
+                provider,
+                discovery: launch.discovery,
+                connection_error: launch.connection_error,
+            },
             event_receiver,
         )
         .await;
@@ -1215,13 +1532,22 @@ mod tests {
             .expect("live URL event should send");
         root.close().expect("shared folder should be removed");
 
+        let provider = quick_provider();
+        let launch = provider
+            .launch(origin)
+            .expect("built-in provider launch should build");
         tokio::time::timeout(
             Duration::from_secs(2),
             supervise_tunnel(
                 app.handle().clone(),
-                share_id.clone(),
-                1,
-                origin,
+                super::SupervisionContext {
+                    share_id: share_id.clone(),
+                    generation: 1,
+                    origin,
+                    provider,
+                    discovery: launch.discovery,
+                    connection_error: launch.connection_error,
+                },
                 event_receiver,
             ),
         )

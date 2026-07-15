@@ -22,6 +22,7 @@ const STATUS_LABEL: Record<Share["status"], string> = {
 
 export interface ShareCardProps {
   share: Share;
+  providerName: string;
   onToggle: (share: Share) => void;
   onCopy: (url: string) => void;
   onOpenUrl: (url: string) => void;
@@ -30,7 +31,7 @@ export interface ShareCardProps {
   onDelete: (share: Share) => void;
 }
 
-export function ShareCard({ share, onToggle, onCopy, onOpenUrl, onReveal, onEdit, onDelete }: ShareCardProps) {
+export function ShareCard({ share, providerName, onToggle, onCopy, onOpenUrl, onReveal, onEdit, onDelete }: ShareCardProps) {
   const [copied, setCopied] = useState(false);
   const live = share.status === "live";
   const busy = share.status === "starting";
@@ -106,6 +107,7 @@ export function ShareCard({ share, onToggle, onCopy, onOpenUrl, onReveal, onEdit
           <span title="Unique visitors"><EyeIcon /> {share.stats.visitors}</span>
           <span title="Data served"><ArrowUpDownIcon /> {fmtBytes(share.stats.bytesServed)}</span>
           {share.autoStart && <span title="Starts when Porta launches">auto-starts</span>}
+          <span className="provider-label" title="Tunnel provider">via {providerName}</span>
         </div>
         <div className="share-actions">
           <button className="btn-ghost icon-btn" title="Edit share" onClick={() => onEdit(share)}>

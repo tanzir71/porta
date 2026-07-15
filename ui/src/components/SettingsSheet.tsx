@@ -1,10 +1,21 @@
 import React from "react";
-import type { Settings } from "../lib/ipc";
+import type {
+  ProviderProfile,
+  ProviderTestResult,
+  SaveProviderProfileInput,
+  Settings,
+} from "../lib/ipc";
 import { isWindows } from "../lib/platform";
+import { ProviderSettings } from "./ProviderSettings";
 
 export interface SettingsSheetProps {
   settings: Settings;
-  onChange: (patch: Partial<Settings>) => void;
+  onChange: (patch: Partial<Settings>) => Promise<void>;
+  profiles: ProviderProfile[];
+  onSaveProvider: (input: SaveProviderProfileInput) => Promise<ProviderProfile>;
+  onDeleteProvider: (id: string) => Promise<void>;
+  onTestProvider: (id: string) => Promise<ProviderTestResult>;
+  onPickProviderExecutable: () => Promise<string | null>;
   onClose: () => void;
   version?: string;
 }
@@ -26,12 +37,22 @@ const Row = ({ title, desc, checked, onToggle }: RowProps) => (
   </div>
 );
 
-export function SettingsSheet({ settings, onChange, onClose, version = "1.1.0" }: SettingsSheetProps) {
+export function SettingsSheet({
+  settings,
+  onChange,
+  profiles,
+  onSaveProvider,
+  onDeleteProvider,
+  onTestProvider,
+  onPickProviderExecutable,
+  onClose,
+  version = "1.2.0",
+}: SettingsSheetProps) {
   return (
     <div className="sheet-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="sheet" role="dialog" aria-modal="true" aria-label="Settings">
         <h3>Settings</h3>
-        <p className="sub">Porta {version} · free forever, tunnels by Cloudflare</p>
+        <p className="sub">Porta {version} · free forever, bring your preferred tunnel provider</p>
 
         <div className="section-label">Startup</div>
         <Row
@@ -55,6 +76,17 @@ export function SettingsSheet({ settings, onChange, onClose, version = "1.1.0" }
             : "Off = Porta lives in the menu bar only."}
           checked={settings.showDockIcon}
           onToggle={() => onChange({ showDockIcon: !settings.showDockIcon })}
+        />
+
+        <div className="section-label">Tunnel providers</div>
+        <ProviderSettings
+          profiles={profiles}
+          defaultProviderId={settings.defaultProviderId}
+          onDefaultChange={(defaultProviderId) => onChange({ defaultProviderId })}
+          onSave={onSaveProvider}
+          onDelete={onDeleteProvider}
+          onTest={onTestProvider}
+          onPickExecutable={onPickProviderExecutable}
         />
 
         <div className="section-label">Sharing</div>

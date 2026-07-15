@@ -11,9 +11,9 @@ use std::fs::File;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-use crate::{settings::Settings, shares::Share};
+use crate::{provider::ProviderProfile, settings::Settings, shares::Share};
 
-const STORE_VERSION: u32 = 1;
+const STORE_VERSION: u32 = 2;
 const STORE_FILE_NAME: &str = "store.json";
 const LOCK_ERROR: &str =
     "Porta's saved data is temporarily unavailable. Quit and reopen Porta, then try again.";
@@ -34,6 +34,8 @@ struct PersistedState {
     shares: Vec<Share>,
     #[serde(default)]
     settings: Settings,
+    #[serde(default)]
+    provider_profiles: Vec<ProviderProfile>,
 }
 
 const fn store_version() -> u32 {
@@ -46,6 +48,7 @@ impl Default for PersistedState {
             version: STORE_VERSION,
             shares: Vec::new(),
             settings: Settings::default(),
+            provider_profiles: Vec::new(),
         }
     }
 }
@@ -70,7 +73,7 @@ impl Store {
             let _ = fs::remove_file(&temporary_path);
         }
 
-        let state = if path.exists() {
+        let mut state = if path.exists() {
             let bytes = fs::read(&path).map_err(|_| READ_ERROR)?;
             serde_json::from_slice(&bytes).map_err(|_| PARSE_ERROR)?
         } else {
@@ -78,6 +81,13 @@ impl Store {
             persist_state(&path, &state)?;
             state
         };
+        if state.version > STORE_VERSION {
+            return Err(PARSE_ERROR.to_owned());
+        }
+        if state.version < STORE_VERSION {
+            state.version = STORE_VERSION;
+            persist_state(&path, &state)?;
+        }
 
         Ok(Self {
             path,
@@ -97,6 +107,38 @@ impl Store {
         let mut state = self.state.lock().map_err(|_| LOCK_ERROR)?;
         let mut next = state.clone();
         let output = update(&mut next.shares, &mut next.settings)?;
+        persist_state(&self.path, &next)?;
+        *state = next;
+        Ok(output)
+    }
+
+    pub fn read_with_providers<T>(
+        &self,
+        reader: impl FnOnce(&[Share], &Settings, &[ProviderProfile]) -> T,
+    ) -> Result<T, String> {
+        let state = self.state.lock().map_err(|_| LOCK_ERROR)?;
+        Ok(reader(
+            &state.shares,
+            &state.settings,
+            &state.provider_profiles,
+        ))
+    }
+
+    pub fn update_with_providers<T>(
+        &self,
+        update: impl FnOnce(
+            &mut Vec<Share>,
+            &mut Settings,
+            &mut Vec<ProviderProfile>,
+        ) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut state = self.state.lock().map_err(|_| LOCK_ERROR)?;
+        let mut next = state.clone();
+        let output = update(
+            &mut next.shares,
+            &mut next.settings,
+            &mut next.provider_profiles,
+        )?;
         persist_state(&self.path, &next)?;
         *state = next;
         Ok(output)
@@ -198,7 +240,11 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{temporary_path, Store, STORE_FILE_NAME};
-    use crate::{settings::Theme, shares::Share};
+    use crate::{
+        provider::{ProviderKind, ProviderProfile, CLOUDFLARE_QUICK_ID},
+        settings::Theme,
+        shares::Share,
+    };
 
     #[test]
     fn writes_atomically_and_reloads_the_last_complete_state() {
@@ -228,7 +274,7 @@ mod tests {
         let saved: Value =
             serde_json::from_slice(&fs::read(&store_path).expect("saved store should be readable"))
                 .expect("saved store should contain complete JSON");
-        assert_eq!(saved["version"], 1);
+        assert_eq!(saved["version"], 2);
         assert_eq!(saved["shares"][0]["id"], share.id);
         assert_eq!(saved["shares"][0]["name"], "Updated on every platform");
         assert_eq!(saved["settings"]["theme"], "dark");
@@ -246,5 +292,88 @@ mod tests {
         assert_eq!(shares[0].name, "Updated on every platform");
         assert_eq!(theme, Theme::Dark);
         assert!(!temporary_path(&store_path).exists());
+    }
+
+    #[test]
+    fn migrates_a_1_1_store_to_cloudflare_quick_without_changing_shares() {
+        let data_dir = tempdir().expect("temporary data directory should be created");
+        let fixture: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/ipc_contract.json"))
+                .expect("fixture should be valid JSON");
+        let mut share = fixture["share"].clone();
+        share
+            .as_object_mut()
+            .expect("fixture share should be an object")
+            .remove("providerId");
+        let mut settings = fixture["settings"].clone();
+        settings
+            .as_object_mut()
+            .expect("fixture settings should be an object")
+            .remove("defaultProviderId");
+        let legacy = serde_json::json!({
+            "version": 1,
+            "shares": [share],
+            "settings": settings
+        });
+        let store_path = data_dir.path().join(STORE_FILE_NAME);
+        fs::write(
+            &store_path,
+            serde_json::to_vec_pretty(&legacy).expect("legacy store should serialize"),
+        )
+        .expect("legacy store should be written");
+
+        let store = Store::load_from_dir(data_dir.path()).expect("legacy store should migrate");
+        let (shares, default_provider, profiles) = store
+            .read_with_providers(|shares, settings, profiles| {
+                (
+                    shares.to_vec(),
+                    settings.default_provider_id.clone(),
+                    profiles.to_vec(),
+                )
+            })
+            .expect("migrated store should be readable");
+        assert_eq!(shares.len(), 1);
+        assert_eq!(shares[0].provider_id, None);
+        assert_eq!(default_provider, CLOUDFLARE_QUICK_ID);
+        assert!(profiles.is_empty());
+
+        let saved: Value = serde_json::from_slice(
+            &fs::read(&store_path).expect("migrated store should be readable from disk"),
+        )
+        .expect("migrated store should contain JSON");
+        assert_eq!(saved["version"], 2);
+        assert_eq!(saved["settings"]["defaultProviderId"], CLOUDFLARE_QUICK_ID);
+        assert!(saved["shares"][0].get("providerId").is_none());
+    }
+
+    #[test]
+    fn persists_provider_profiles_without_any_secret_field() {
+        let data_dir = tempdir().expect("temporary data directory should be created");
+        let store = Store::load_from_dir(data_dir.path()).expect("store should initialize");
+        let profile = ProviderProfile {
+            id: "custom-test".to_owned(),
+            name: "Custom test".to_owned(),
+            kind: ProviderKind::Custom,
+            executable: Some("/tmp/vendor".to_owned()),
+            arguments: vec!["{origin}".to_owned()],
+            public_url: None,
+            url_pattern: Some("https://example\\.com".to_owned()),
+            credential_env: Some("VENDOR_TOKEN".to_owned()),
+            forwarded_ip_header: Some("X-Forwarded-For".to_owned()),
+            local_port: None,
+            created_at: "2026-07-15T00:00:00Z".to_owned(),
+        };
+        store
+            .update_with_providers(|_, _, profiles| {
+                profiles.push(profile);
+                Ok(())
+            })
+            .expect("profile should persist");
+
+        let saved = fs::read_to_string(data_dir.path().join(STORE_FILE_NAME))
+            .expect("store should be readable");
+        assert!(saved.contains("custom-test"));
+        assert!(!saved.contains("\"credential\":"));
+        assert!(!saved.contains("\"secret\":"));
     }
 }

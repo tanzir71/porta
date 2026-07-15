@@ -30,6 +30,10 @@ jobs:
           $version = $env:GITHUB_REF_NAME.TrimStart("v")
           $config = Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json
           if ($config.version -ne $version) { throw "Tag version $version does not match Tauri version $($config.version)" }
+          $ui = Get-Content ui/package.json | ConvertFrom-Json
+          if ($ui.version -ne $version) { throw "Tag version $version does not match UI version $($ui.version)" }
+          $cargo = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version = "([^"]+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          if ($cargo -ne $version) { throw "Tag version $version does not match Cargo version $cargo" }
           "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
 
       - name: Set up Node.js
@@ -108,7 +112,11 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           config_version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          ui_version="$(node -p "require('./ui/package.json').version")"
+          cargo_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' src-tauri/Cargo.toml | head -1)"
           test "$version" = "$config_version"
+          test "$version" = "$ui_version"
+          test "$version" = "$cargo_version"
           echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Set up Node.js
