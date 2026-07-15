@@ -1,20 +1,18 @@
-use serde_json::{json, Value};
+pub mod settings;
+pub mod shares;
+pub mod stats;
+
+use settings::Settings;
+use shares::Share;
 
 #[tauri::command]
-fn list_shares() -> Result<Vec<Value>, String> {
+fn list_shares() -> Result<Vec<Share>, String> {
     Ok(Vec::new())
 }
 
 #[tauri::command]
-fn get_settings() -> Result<Value, String> {
-    Ok(json!({
-        "launchAtLogin": false,
-        "autoStartShares": true,
-        "showDockIcon": true,
-        "notifyOnFirstVisitor": true,
-        "copyUrlOnStart": true,
-        "theme": "system"
-    }))
+fn get_settings() -> Result<Settings, String> {
+    Ok(Settings::default())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

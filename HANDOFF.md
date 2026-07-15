@@ -147,7 +147,7 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 - [x] Verify: `cargo tauri dev` renders EmptyState or mock cards with no console errors
 
 ### M1 — Share store + CRUD (no tunnel yet)
-- [ ] `Share`/`Settings` structs mirror `ipc.ts` exactly (camelCase serde); unit test deserializes a TS-shaped JSON fixture
+- [x] `Share`/`Settings` structs mirror `ipc.ts` exactly (camelCase serde); unit test deserializes a TS-shaped JSON fixture
 - [ ] JSON persistence in app-data dir; atomic writes (write temp + rename)
 - [ ] `list/create/update/delete_share`, `pick_folder`, `reveal_in_finder`, `open_url`, `get/update_settings` implemented; statuses still fake `stopped`
 - [ ] `app_event` plumbing works: `update_share` from UI reflects instantly in a second window/devtools

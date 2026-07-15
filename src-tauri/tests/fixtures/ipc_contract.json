@@ -1,0 +1,56 @@
+{
+  "share": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "kind": "folder",
+    "name": "Client Mockups",
+    "path": "/Users/example/Client Mockups",
+    "port": null,
+    "url": "https://violet-harbor.trycloudflare.com",
+    "status": "live",
+    "error": null,
+    "passwordProtected": true,
+    "showListing": true,
+    "allowUploads": false,
+    "autoStart": true,
+    "stats": {
+      "visitors": 4,
+      "requests": 132,
+      "bytesServed": 48200000
+    },
+    "createdAt": "2026-07-15T00:00:00Z"
+  },
+  "settings": {
+    "launchAtLogin": false,
+    "autoStartShares": true,
+    "showDockIcon": true,
+    "notifyOnFirstVisitor": true,
+    "copyUrlOnStart": true,
+    "theme": "system"
+  },
+  "createShareInput": {
+    "kind": "folder",
+    "path": "/Users/example/Client Mockups",
+    "name": "Client Mockups",
+    "password": "correct horse battery staple",
+    "showListing": true,
+    "allowUploads": false,
+    "autoStart": true,
+    "startNow": false
+  },
+  "updateShareInput": {
+    "name": "Updated Mockups",
+    "password": null,
+    "showListing": false,
+    "allowUploads": true,
+    "autoStart": false
+  },
+  "event": {
+    "type": "stats_updated",
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "stats": {
+      "visitors": 5,
+      "requests": 140,
+      "bytesServed": 49000000
+    }
+  }
+}
