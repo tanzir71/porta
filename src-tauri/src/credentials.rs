@@ -1,7 +1,7 @@
 use keyring::{Entry, Error};
 
 const SERVICE: &str = "com.porta.app";
-const PROVIDER_PREFIX: &str = "provider:";
+const PROVIDER_PREFIX: &str = "provider-";
 
 #[cfg(target_os = "windows")]
 const READ_ERROR: &str =
@@ -123,6 +123,14 @@ pub fn replace_provider_secret(provider_id: &str, secret: Option<&str>) -> Resul
 
 fn provider_account(provider_id: &str) -> String {
     format!("{PROVIDER_PREFIX}{provider_id}")
+}
+
+#[cfg(test)]
+#[test]
+fn provider_accounts_are_valid_windows_credential_usernames() {
+    let account = provider_account("550e8400-e29b-41d4-a716-446655440000");
+    assert_eq!(account, "provider-550e8400-e29b-41d4-a716-446655440000");
+    assert!(!account.contains(':'));
 }
 
 fn entry(share_id: &str, message: &str) -> Result<Entry, String> {
