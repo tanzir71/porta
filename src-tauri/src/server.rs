@@ -6,15 +6,17 @@ use std::{
 
 use axum::{
     body::Body,
+    extract::State,
     http::{
         header::{ETAG, IF_NONE_MATCH},
         HeaderValue, Method, Request, StatusCode,
     },
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::{Html, IntoResponse, Redirect, Response},
     Router,
 };
-use percent_encoding::percent_decode_str;
+use chrono::{DateTime, Local};
+use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
 use tokio::{sync::oneshot, task::JoinHandle};
 use tower_http::services::ServeDir;
 
@@ -23,6 +25,47 @@ const START_ERROR: &str =
     "Porta couldn't start a local server. Quit and reopen Porta, then try again.";
 const STOP_ERROR: &str =
     "Porta couldn't stop the local server cleanly. Quit Porta before sharing it again.";
+const LISTING_TEMPLATE: &str = include_str!("../../server-templates/listing.html");
+const FOLDER_SVG: &str = r#"<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 19V6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>"#;
+const FILE_SVG: &str = r#"<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 2h8l4 4v16H6V2Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 2v5h4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>"#;
+
+/// Settings needed to start one folder server.
+pub struct FileServerConfig {
+    root: PathBuf,
+    share_name: String,
+    allow_uploads: bool,
+}
+
+impl FileServerConfig {
+    /// Creates a listing-enabled configuration with uploads hidden.
+    pub fn new(root: impl Into<PathBuf>, share_name: impl Into<String>) -> Self {
+        Self {
+            root: root.into(),
+            share_name: share_name.into(),
+            allow_uploads: false,
+        }
+    }
+
+    /// Controls whether the listing shows its upload widget.
+    pub fn allow_uploads(mut self, allow_uploads: bool) -> Self {
+        self.allow_uploads = allow_uploads;
+        self
+    }
+}
+
+#[derive(Clone)]
+struct ListingState {
+    root: PathBuf,
+    share_name: String,
+    allow_uploads: bool,
+}
+
+struct DirectoryEntry {
+    name: String,
+    is_dir: bool,
+    size: u64,
+    modified: Option<std::time::SystemTime>,
+}
 
 /// One loopback HTTP server for one shared folder.
 pub struct FileServer {
@@ -32,9 +75,9 @@ pub struct FileServer {
 }
 
 impl FileServer {
-    /// Starts serving `root` from an OS-assigned loopback port.
-    pub async fn start(root: impl AsRef<Path>) -> Result<Self, String> {
-        let root = tokio::fs::canonicalize(root.as_ref())
+    /// Starts serving the configured folder from an OS-assigned loopback port.
+    pub async fn start(config: FileServerConfig) -> Result<Self, String> {
+        let root = tokio::fs::canonicalize(&config.root)
             .await
             .map_err(|_| INVALID_FOLDER.to_owned())?;
         let metadata = tokio::fs::metadata(&root)
@@ -48,8 +91,17 @@ impl FileServer {
             .await
             .map_err(|_| START_ERROR.to_owned())?;
         let address = listener.local_addr().map_err(|_| START_ERROR.to_owned())?;
+        let listing_state = ListingState {
+            root: root.clone(),
+            share_name: config.share_name,
+            allow_uploads: config.allow_uploads,
+        };
         let app = Router::new()
             .fallback_service(ServeDir::new(&root))
+            .layer(middleware::from_fn_with_state(
+                listing_state,
+                serve_directory_listing,
+            ))
             .layer(middleware::from_fn_with_state(root, add_etag));
         let (shutdown, shutdown_signal) = oneshot::channel();
         let task = tokio::spawn(async move {
@@ -99,11 +151,157 @@ impl Drop for FileServer {
     }
 }
 
-async fn add_etag(
-    axum::extract::State(root): axum::extract::State<PathBuf>,
+async fn serve_directory_listing(
+    State(state): State<ListingState>,
     request: Request<Body>,
     next: Next,
 ) -> Response {
+    if request.method() != Method::GET {
+        return next.run(request).await;
+    }
+
+    let request_path = request.uri().path().to_owned();
+    let Some(directory) = resolve_request_path(&state.root, &request_path).await else {
+        return next.run(request).await;
+    };
+    if !directory.is_dir() {
+        return next.run(request).await;
+    }
+
+    if !request_path.ends_with('/') {
+        let mut location = format!("{request_path}/");
+        if let Some(query) = request.uri().query() {
+            location.push('?');
+            location.push_str(query);
+        }
+        return Redirect::permanent(&location).into_response();
+    }
+
+    match render_listing(&state, &directory, &request_path).await {
+        Some(listing) => Html(listing).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn render_listing(
+    state: &ListingState,
+    directory: &Path,
+    request_path: &str,
+) -> Option<String> {
+    let mut reader = tokio::fs::read_dir(directory).await.ok()?;
+    let mut entries = Vec::new();
+    while let Ok(Some(entry)) = reader.next_entry().await {
+        let canonical = match tokio::fs::canonicalize(entry.path()).await {
+            Ok(path) if path.starts_with(&state.root) => path,
+            _ => continue,
+        };
+        let metadata = match tokio::fs::metadata(canonical).await {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        entries.push(DirectoryEntry {
+            name: entry.file_name().to_string_lossy().into_owned(),
+            is_dir: metadata.is_dir(),
+            size: metadata.len(),
+            modified: metadata.modified().ok(),
+        });
+    }
+    entries.sort_by(|left, right| {
+        right
+            .is_dir
+            .cmp(&left.is_dir)
+            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+
+    let rows = if entries.is_empty() {
+        r#"<div class="empty-msg">This folder is empty</div>"#.to_owned()
+    } else {
+        entries
+            .iter()
+            .map(|entry| render_row(entry, request_path))
+            .collect::<String>()
+    };
+    let uploads = if state.allow_uploads { "block" } else { "none" };
+
+    Some(
+        LISTING_TEMPLATE
+            .replace("{{SHARE_NAME}}", &escape_html(&state.share_name))
+            .replace("{{BREADCRUMB}}", &render_breadcrumb(request_path))
+            .replace("{{ROWS}}", &rows)
+            .replace("{{UPLOADS}}", uploads),
+    )
+}
+
+fn render_row(entry: &DirectoryEntry, request_path: &str) -> String {
+    let encoded_name = utf8_percent_encode(&entry.name, NON_ALPHANUMERIC);
+    let trailing_slash = if entry.is_dir { "/" } else { "" };
+    let href = format!("{request_path}{encoded_name}{trailing_slash}");
+    let icon = if entry.is_dir { FOLDER_SVG } else { FILE_SVG };
+    let size = if entry.is_dir {
+        "—".to_owned()
+    } else {
+        human_size(entry.size)
+    };
+    let modified = entry
+        .modified
+        .map(format_date)
+        .unwrap_or_else(|| "—".to_owned());
+
+    format!(
+        r#"<a class="row" href="{}"><span class="ic">{icon}</span><span class="nm">{}</span><span class="sz">{size}</span><span class="dt">{modified}</span></a>"#,
+        escape_html(&href),
+        escape_html(&entry.name),
+    )
+}
+
+fn render_breadcrumb(request_path: &str) -> String {
+    let decoded = percent_decode_str(request_path.trim_matches('/')).decode_utf8_lossy();
+    let mut breadcrumb = r#"<a href="/">Home</a>"#.to_owned();
+    let mut href = String::from("/");
+    for segment in decoded.split('/').filter(|segment| !segment.is_empty()) {
+        href.push_str(&utf8_percent_encode(segment, NON_ALPHANUMERIC).to_string());
+        href.push('/');
+        breadcrumb.push_str(r#" <span>/</span> <a href=""#);
+        breadcrumb.push_str(&escape_html(&href));
+        breadcrumb.push_str(r#"">"#);
+        breadcrumb.push_str(&escape_html(segment));
+        breadcrumb.push_str("</a>");
+    }
+    breadcrumb
+}
+
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    let formatted = format!("{value:.1}");
+    format!("{} {}", formatted.trim_end_matches(".0"), UNITS[unit])
+}
+
+fn format_date(time: std::time::SystemTime) -> String {
+    let date: DateTime<Local> = time.into();
+    date.format("%b %-d, %Y").to_string()
+}
+
+fn escape_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+async fn add_etag(State(root): State<PathBuf>, request: Request<Body>, next: Next) -> Response {
     if !matches!(*request.method(), Method::GET | Method::HEAD) {
         return next.run(request).await;
     }
@@ -145,6 +343,22 @@ fn insert_etag(response: &mut Response, etag: &str) {
 }
 
 async fn etag_for_request(root: &Path, request_path: &str) -> Option<String> {
+    let path = resolve_request_path(root, request_path).await?;
+    let metadata = tokio::fs::metadata(path).await.ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    let modified = metadata
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+
+    Some(format!("W/\"{:x}-{modified:x}\"", metadata.len()))
+}
+
+async fn resolve_request_path(root: &Path, request_path: &str) -> Option<PathBuf> {
     let decoded = percent_decode_str(request_path.trim_start_matches('/'))
         .decode_utf8()
         .ok()?;
@@ -161,18 +375,7 @@ async fn etag_for_request(root: &Path, request_path: &str) -> Option<String> {
     if !path.starts_with(root) {
         return None;
     }
-    let metadata = tokio::fs::metadata(path).await.ok()?;
-    if !metadata.is_file() {
-        return None;
-    }
-    let modified = metadata
-        .modified()
-        .ok()?
-        .duration_since(UNIX_EPOCH)
-        .ok()?
-        .as_nanos();
-
-    Some(format!("W/\"{:x}-{modified:x}\"", metadata.len()))
+    Some(path)
 }
 
 #[cfg(test)]
@@ -182,7 +385,7 @@ mod tests {
     use tempfile::tempdir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    use super::FileServer;
+    use super::{FileServer, FileServerConfig};
 
     struct HttpResponse {
         status: u16,
@@ -248,10 +451,10 @@ mod tests {
             .await
             .expect("second media file should be written");
 
-        let first = FileServer::start(first_root.path())
+        let first = FileServer::start(FileServerConfig::new(first_root.path(), "First"))
             .await
             .expect("first file server should start");
-        let second = FileServer::start(second_root.path())
+        let second = FileServer::start(FileServerConfig::new(second_root.path(), "Second"))
             .await
             .expect("second file server should start");
         assert_ne!(first.address(), second.address());
@@ -293,5 +496,64 @@ mod tests {
 
         first.stop().await.expect("first server should stop");
         second.stop().await.expect("second server should stop");
+    }
+
+    #[tokio::test]
+    async fn renders_sorted_nested_directory_listings_from_the_template() {
+        let root = tempdir().expect("temporary folder should be created");
+        tokio::fs::create_dir_all(root.path().join("Alpha/Deep Folder"))
+            .await
+            .expect("nested directory should be created");
+        tokio::fs::create_dir(root.path().join("zeta"))
+            .await
+            .expect("second directory should be created");
+        tokio::fs::write(root.path().join("Zoo.bin"), b"zoo")
+            .await
+            .expect("second file should be written");
+        tokio::fs::write(root.path().join("beta.txt"), vec![b'b'; 1536])
+            .await
+            .expect("sized file should be written");
+        tokio::fs::write(
+            root.path().join("Alpha/Deep Folder/doc & notes.txt"),
+            b"nested",
+        )
+        .await
+        .expect("nested file should be written");
+
+        let server = FileServer::start(
+            FileServerConfig::new(root.path(), "<Team & Files>").allow_uploads(true),
+        )
+        .await
+        .expect("listing server should start");
+
+        let root_listing = request(server.address(), "/", &[]).await;
+        assert_eq!(root_listing.status, 200);
+        assert_eq!(
+            root_listing.headers.get("content-type").map(String::as_str),
+            Some("text/html; charset=utf-8")
+        );
+        let root_html = String::from_utf8(root_listing.body)
+            .expect("directory listing should contain UTF-8 HTML");
+        assert!(root_html.contains("&lt;Team &amp; Files&gt;"));
+        assert!(root_html.contains("display: block"));
+        assert!(root_html.contains("1.5 KB"));
+        assert!(!root_html.contains("{{"));
+
+        let alpha = root_html.find(">Alpha</span>").expect("Alpha row");
+        let zeta = root_html.find(">zeta</span>").expect("zeta row");
+        let beta = root_html.find(">beta.txt</span>").expect("beta row");
+        let zoo = root_html.find(">Zoo.bin</span>").expect("Zoo row");
+        assert!(alpha < zeta && zeta < beta && beta < zoo);
+
+        let nested = request(server.address(), "/Alpha/Deep%20Folder/", &[]).await;
+        assert_eq!(nested.status, 200);
+        let nested_html = String::from_utf8(nested.body)
+            .expect("nested directory listing should contain UTF-8 HTML");
+        assert!(nested_html.contains(r#"<a href="/Alpha/">Alpha</a>"#));
+        assert!(nested_html.contains(r#"<a href="/Alpha/Deep%20Folder/">Deep Folder</a>"#));
+        assert!(nested_html.contains(r#"href="/Alpha/Deep%20Folder/doc%20%26%20notes%2Etxt""#));
+        assert!(nested_html.contains(r#"<span class="dt">"#));
+
+        server.stop().await.expect("listing server should stop");
     }
 }
