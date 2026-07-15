@@ -184,7 +184,7 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 - [x] `autoStartShares` on launch (only when master switch on)
 - [x] Native drag-drop wired to the three `porta:*` CustomEvents; dropping a real folder from Finder opens the create sheet with the correct absolute path
 - [x] Single-instance plugin: second launch focuses existing window
-- [ ] Verify: log out/in → Porta running in menu bar, auto-start shares live, links work
+- [~] Verify: log out/in → Porta running in menu bar, auto-start shares live, links work
 
 ### M6 — Polish & hardening
 - [ ] All error strings audited against §6.2 (no `Error:`, no paths-only, always an action)
@@ -236,3 +236,4 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 
 - [~] **M3 live phone verification (2026-07-15):** macOS Accessibility permission blocked automated interaction with the running Porta window. Two runs of `cargo test --test live_tunnel_smoke -- --ignored --nocapture` started Porta's real file server, launched the bundled cloudflared, received valid Quick Tunnel URLs, and left zero orphan processes, but this environment retained negative DNS results after `1.1.1.1` resolved the host; direct edge-IP download also timed out. Re-run the ignored smoke test on an unrestricted network, then open its printed URL on a phone and download the fixture.
 - [~] **M4 cellular stats verification (2026-07-15):** `cargo test server::tests::counts_requests_streamed_bytes_and_unique_cloudflare_visitors -- --exact` passes and proves two distinct `Cf-Connecting-Ip` values produce `visitors=2`, but a physical cellular phone is unavailable and the M3 public-tunnel blocker prevents an honest UI/device check. After resolving M3, load the URL once on Wi-Fi and once on cellular, then confirm the card shows two visitors.
+- [~] **M5 login-session verification (2026-07-15):** a temporary opted-in folder share proved that direct app startup registers `~/Library/LaunchAgents/Porta.plist`, creates the tray, auto-starts cloudflared, reaches `live`, and serves its public listing successfully. Two safer `launchctl bootstrap gui/$UID` login simulations loaded the agent but the unsigned debug executable stalled inside `dyld` before Porta setup; forcibly logging out the active Codex desktop would be disruptive and still would not represent the later bundled app. Re-run this check with the signed-or-ad-hoc `.app` produced by M6: enable Launch at Login, log out/in, then confirm the tray appears and an opted-in share becomes reachable.
