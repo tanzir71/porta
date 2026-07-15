@@ -158,7 +158,7 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 - [x] `listing.html` rendered with all placeholders per §7-notes in the template header; dirs-first A→Z; human sizes; breadcrumbs correct at any depth
 - [x] `showListing:false` → serve `index.html` at `/` or a minimal 403 page if none exists
 - [x] Path traversal blocked (test with `curl --path-as-is /a/../../etc/passwd` → 404)
-- [ ] basic-auth middleware when password set (realm "Porta"); password stored/read via Keychain
+- [x] basic-auth middleware when password set (realm "Porta"); password stored/read via Keychain
 - [ ] uploads: multipart POST to current dir when `allowUploads`; collision-safe; 303 redirect back
 - [ ] Verify: integration test hits a temp dir share: listing renders, file downloads byte-identical, traversal 404s, wrong password 401s
 

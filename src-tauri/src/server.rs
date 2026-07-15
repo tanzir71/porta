@@ -1,6 +1,7 @@
 use std::{
     net::{Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
+    sync::Arc,
     time::UNIX_EPOCH,
 };
 
@@ -8,23 +9,28 @@ use axum::{
     body::Body,
     extract::State,
     http::{
-        header::{ETAG, IF_NONE_MATCH},
+        header::{AUTHORIZATION, ETAG, IF_NONE_MATCH, WWW_AUTHENTICATE},
         HeaderValue, Method, Request, StatusCode,
     },
     middleware::{self, Next},
     response::{Html, IntoResponse, Redirect, Response},
     Router,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use chrono::{DateTime, Local};
 use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
+use subtle::ConstantTimeEq;
 use tokio::{sync::oneshot, task::JoinHandle};
 use tower_http::services::ServeDir;
+
+use crate::{credentials, shares::Share};
 
 const INVALID_FOLDER: &str = "This folder was moved or deleted. Pick it again to reshare.";
 const START_ERROR: &str =
     "Porta couldn't start a local server. Quit and reopen Porta, then try again.";
 const STOP_ERROR: &str =
     "Porta couldn't stop the local server cleanly. Quit Porta before sharing it again.";
+const MISSING_PASSWORD: &str = "Porta couldn't find this share's password in Keychain. Edit the share, set the password again, then try again.";
 const LISTING_TEMPLATE: &str = include_str!("../../server-templates/listing.html");
 const LISTING_DISABLED_PAGE: &str = r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Folder browsing is off</title></head><body><main><h1>Folder browsing is off</h1><p>Ask the person sharing this folder for a direct link to a file.</p></main></body></html>"#;
 const FOLDER_SVG: &str = r#"<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 19V6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>"#;
@@ -36,6 +42,7 @@ pub struct FileServerConfig {
     share_name: String,
     show_listing: bool,
     allow_uploads: bool,
+    password: Option<String>,
 }
 
 impl FileServerConfig {
@@ -46,7 +53,25 @@ impl FileServerConfig {
             share_name: share_name.into(),
             show_listing: true,
             allow_uploads: false,
+            password: None,
         }
+    }
+
+    /// Builds a configuration for a persisted share, reading its password from Keychain.
+    pub fn for_share(share: &Share) -> Result<Self, String> {
+        let root = share.path.clone().ok_or_else(|| {
+            "This folder share has no folder. Edit the share and pick it again.".to_owned()
+        })?;
+        let password = if share.password_protected {
+            Some(credentials::get_password(&share.id)?.ok_or_else(|| MISSING_PASSWORD.to_owned())?)
+        } else {
+            None
+        };
+
+        Ok(Self::new(root, share.name.clone())
+            .show_listing(share.show_listing)
+            .allow_uploads(share.allow_uploads)
+            .password(password))
     }
 
     /// Controls whether visitors may browse directory contents.
@@ -60,6 +85,12 @@ impl FileServerConfig {
         self.allow_uploads = allow_uploads;
         self
     }
+
+    /// Supplies an in-memory password; persisted configurations should use [`Self::for_share`].
+    pub fn password(mut self, password: Option<String>) -> Self {
+        self.password = password;
+        self
+    }
 }
 
 #[derive(Clone)]
@@ -68,6 +99,11 @@ struct ListingState {
     share_name: String,
     show_listing: bool,
     allow_uploads: bool,
+}
+
+#[derive(Clone)]
+struct AuthState {
+    password: Option<Arc<str>>,
 }
 
 struct DirectoryEntry {
@@ -107,6 +143,9 @@ impl FileServer {
             show_listing: config.show_listing,
             allow_uploads: config.allow_uploads,
         };
+        let auth_state = AuthState {
+            password: config.password.map(Arc::from),
+        };
         let app = Router::new()
             .fallback_service(ServeDir::new(&root))
             .layer(middleware::from_fn_with_state(
@@ -114,6 +153,10 @@ impl FileServer {
                 serve_directory_listing,
             ))
             .layer(middleware::from_fn_with_state(root.clone(), add_etag))
+            .layer(middleware::from_fn_with_state(
+                auth_state,
+                require_basic_auth,
+            ))
             .layer(middleware::from_fn_with_state(root, enforce_shared_root));
         let (shutdown, shutdown_signal) = oneshot::channel();
         let task = tokio::spawn(async move {
@@ -175,6 +218,55 @@ async fn enforce_shared_root(
         return StatusCode::NOT_FOUND.into_response();
     }
     next.run(request).await
+}
+
+async fn require_basic_auth(
+    State(state): State<AuthState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let Some(expected) = state.password.as_deref() else {
+        return next.run(request).await;
+    };
+    let authorized = request
+        .headers()
+        .get(AUTHORIZATION)
+        .is_some_and(|header| valid_basic_credentials(header, expected));
+    if authorized {
+        return next.run(request).await;
+    }
+
+    let mut response = (
+        StatusCode::UNAUTHORIZED,
+        "Enter this share's password to continue.",
+    )
+        .into_response();
+    response.headers_mut().insert(
+        WWW_AUTHENTICATE,
+        HeaderValue::from_static("Basic realm=\"Porta\""),
+    );
+    response
+}
+
+fn valid_basic_credentials(header: &HeaderValue, expected: &str) -> bool {
+    let Some((scheme, encoded)) = header.to_str().ok().and_then(|value| value.split_once(' '))
+    else {
+        return false;
+    };
+    if !scheme.eq_ignore_ascii_case("basic") {
+        return false;
+    }
+    let Ok(decoded) = BASE64.decode(encoded.trim()) else {
+        return false;
+    };
+    let Ok(credentials) = std::str::from_utf8(&decoded) else {
+        return false;
+    };
+    let Some((_, supplied)) = credentials.split_once(':') else {
+        return false;
+    };
+
+    bool::from(supplied.as_bytes().ct_eq(expected.as_bytes()))
 }
 
 async fn serve_directory_listing(
@@ -425,6 +517,7 @@ async fn resolve_request_path(root: &Path, request_path: &str) -> Option<PathBuf
 mod tests {
     use std::{collections::HashMap, net::SocketAddr};
 
+    use base64::Engine as _;
     use tempfile::tempdir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -712,5 +805,54 @@ mod tests {
         assert_eq!(curl.stdout, b"404");
 
         server.stop().await.expect("safe server should stop");
+    }
+
+    #[tokio::test]
+    async fn requires_the_keychain_password_with_porta_basic_auth_realm() {
+        let root = tempdir().expect("protected folder should be created");
+        tokio::fs::write(root.path().join("private.txt"), b"private")
+            .await
+            .expect("protected file should be written");
+        let server = FileServer::start(
+            FileServerConfig::new(root.path(), "Protected")
+                .password(Some("correct horse 🔒".to_owned())),
+        )
+        .await
+        .expect("protected server should start");
+
+        let missing = request(server.address(), "/private.txt", &[]).await;
+        assert_eq!(missing.status, 401);
+        assert_eq!(
+            missing.headers.get("www-authenticate").map(String::as_str),
+            Some(r#"Basic realm="Porta""#)
+        );
+        assert_ne!(missing.body, b"private");
+
+        let wrong = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode("porta:wrong")
+        );
+        let rejected = request(
+            server.address(),
+            "/private.txt",
+            &[("Authorization", &wrong)],
+        )
+        .await;
+        assert_eq!(rejected.status, 401);
+
+        let correct = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode("any username:correct horse 🔒")
+        );
+        let allowed = request(
+            server.address(),
+            "/private.txt",
+            &[("Authorization", &correct)],
+        )
+        .await;
+        assert_eq!(allowed.status, 200);
+        assert_eq!(allowed.body, b"private");
+
+        server.stop().await.expect("protected server should stop");
     }
 }
