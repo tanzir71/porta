@@ -58,7 +58,7 @@ impl Store {
         Self::load_from_dir(&data_dir)
     }
 
-    fn load_from_dir(data_dir: &Path) -> Result<Self, String> {
+    pub(crate) fn load_from_dir(data_dir: &Path) -> Result<Self, String> {
         fs::create_dir_all(data_dir).map_err(|_| PREPARE_ERROR)?;
 
         let path = data_dir.join(STORE_FILE_NAME);

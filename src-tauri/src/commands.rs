@@ -30,6 +30,14 @@ pub(crate) fn create_share(
     store: State<'_, Store>,
     input: CreateShareInput,
 ) -> Result<Share, String> {
+    create_share_in(&app, &store, input)
+}
+
+fn create_share_in<R: Runtime>(
+    app: &AppHandle<R>,
+    store: &Store,
+    input: CreateShareInput,
+) -> Result<Share, String> {
     let share = build_share(&input)?;
     let password = input.password.as_deref();
 
@@ -48,7 +56,7 @@ pub(crate) fn create_share(
 
     let saved = save_result?;
     emit_app_event(
-        &app,
+        app,
         AppEvent::ShareChanged {
             share: saved.clone(),
         },
@@ -104,8 +112,28 @@ pub(crate) fn delete_share(
     store: State<'_, Store>,
     id: String,
 ) -> Result<(), String> {
-    let previous_password = credentials::get_password(&id)?;
-    credentials::replace_password(&id, None)?;
+    delete_share_in(&app, &store, id)
+}
+
+fn delete_share_in<R: Runtime>(
+    app: &AppHandle<R>,
+    store: &Store,
+    id: String,
+) -> Result<(), String> {
+    let password_protected = store.read(|shares, _| {
+        shares
+            .iter()
+            .find(|share| share.id == id)
+            .map(|share| share.password_protected)
+            .ok_or_else(|| MISSING_SHARE.to_owned())
+    })??;
+    let previous_password = if password_protected {
+        let password = credentials::get_password(&id)?;
+        credentials::replace_password(&id, None)?;
+        password
+    } else {
+        None
+    };
 
     let delete_result = store.update(|shares, _| {
         let index = shares
@@ -116,12 +144,12 @@ pub(crate) fn delete_share(
         Ok(())
     });
 
-    if delete_result.is_err() {
+    if delete_result.is_err() && password_protected {
         let _ = credentials::replace_password(&id, previous_password.as_deref());
     }
 
     delete_result?;
-    emit_app_event(&app, AppEvent::ShareRemoved { id })
+    emit_app_event(app, AppEvent::ShareRemoved { id })
 }
 
 #[tauri::command]
@@ -352,10 +380,14 @@ mod tests {
     use tauri::{Listener, WebviewWindowBuilder};
     use tempfile::tempdir;
 
-    use super::{apply_settings_patch, apply_share_patch, build_share, emit_app_event};
+    use super::{
+        apply_settings_patch, apply_share_patch, build_share, create_share_in, delete_share_in,
+        emit_app_event,
+    };
     use crate::{
         settings::{Settings, SettingsPatch, Theme},
-        shares::{AppEvent, CreateShareInput, ShareKind, ShareStatus, UpdateShareInput},
+        shares::{AppEvent, CreateShareInput, Share, ShareKind, ShareStatus, UpdateShareInput},
+        store::Store,
     };
 
     #[test]
@@ -480,5 +512,54 @@ mod tests {
             );
         }
         assert_eq!(labels, HashSet::from(["first", "second"]));
+    }
+
+    #[test]
+    fn create_survives_relaunch_and_delete_is_permanent() {
+        let data_dir = tempdir().expect("temporary data directory should be created");
+
+        let created_id = {
+            let app = tauri::test::mock_app();
+            let store = Store::load_from_dir(data_dir.path()).expect("test store should load");
+            let created = create_share_in(
+                app.handle(),
+                &store,
+                CreateShareInput {
+                    kind: ShareKind::Port,
+                    path: None,
+                    port: Some(4173),
+                    name: Some("Persistent preview".to_owned()),
+                    password: None,
+                    show_listing: None,
+                    allow_uploads: None,
+                    auto_start: None,
+                    start_now: Some(false),
+                },
+            )
+            .expect("create command implementation should succeed");
+
+            assert_eq!(created.name, "Persistent preview");
+            assert_eq!(created.status, ShareStatus::Stopped);
+            created.id
+        };
+
+        {
+            let relaunched = tauri::test::mock_app();
+            let store = Store::load_from_dir(data_dir.path()).expect("saved store should reload");
+            let shares: Vec<Share> = store
+                .read(|shares, _| shares.to_vec())
+                .expect("reloaded shares should be readable");
+            assert_eq!(shares.len(), 1);
+            assert_eq!(shares[0].id, created_id);
+
+            delete_share_in(relaunched.handle(), &store, created_id)
+                .expect("delete command implementation should succeed");
+        }
+
+        let store = Store::load_from_dir(data_dir.path()).expect("deleted store should reload");
+        let shares: Vec<Share> = store
+            .read(|shares, _| shares.to_vec())
+            .expect("shares should be readable after deletion relaunch");
+        assert!(shares.is_empty());
     }
 }

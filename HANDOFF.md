@@ -151,7 +151,7 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 - [x] JSON persistence in app-data dir; atomic writes (write temp + rename)
 - [x] `list/create/update/delete_share`, `pick_folder`, `reveal_in_finder`, `open_url`, `get/update_settings` implemented; statuses still fake `stopped`
 - [x] `app_event` plumbing works: `update_share` from UI reflects instantly in a second window/devtools
-- [ ] Verify: create → quit → relaunch → share persists; delete removes it
+- [x] Verify: create → quit → relaunch → share persists; delete removes it
 
 ### M2 — Local file server
 - [ ] axum ServeDir per folder share on `127.0.0.1:0`; correct MIME; ETag/Range for media
