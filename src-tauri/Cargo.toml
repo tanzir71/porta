@@ -13,7 +13,7 @@ crate-type = ["lib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "multipart", "tokio"] }
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 keyring = "4.1"

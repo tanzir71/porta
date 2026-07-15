@@ -7,7 +7,7 @@ use std::{
 
 use axum::{
     body::Body,
-    extract::State,
+    extract::{DefaultBodyLimit, FromRequest, Multipart, State},
     http::{
         header::{AUTHORIZATION, ETAG, IF_NONE_MATCH, WWW_AUTHENTICATE},
         HeaderValue, Method, Request, StatusCode,
@@ -20,7 +20,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use chrono::{DateTime, Local};
 use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
 use subtle::ConstantTimeEq;
-use tokio::{sync::oneshot, task::JoinHandle};
+use tokio::{io::AsyncWriteExt, sync::oneshot, task::JoinHandle};
 use tower_http::services::ServeDir;
 
 use crate::{credentials, shares::Share};
@@ -31,6 +31,7 @@ const START_ERROR: &str =
 const STOP_ERROR: &str =
     "Porta couldn't stop the local server cleanly. Quit Porta before sharing it again.";
 const MISSING_PASSWORD: &str = "Porta couldn't find this share's password in Keychain. Edit the share, set the password again, then try again.";
+const MAX_UPLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const LISTING_TEMPLATE: &str = include_str!("../../server-templates/listing.html");
 const LISTING_DISABLED_PAGE: &str = r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Folder browsing is off</title></head><body><main><h1>Folder browsing is off</h1><p>Ask the person sharing this folder for a direct link to a file.</p></main></body></html>"#;
 const FOLDER_SVG: &str = r#"<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 19V6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>"#;
@@ -157,7 +158,8 @@ impl FileServer {
                 auth_state,
                 require_basic_auth,
             ))
-            .layer(middleware::from_fn_with_state(root, enforce_shared_root));
+            .layer(middleware::from_fn_with_state(root, enforce_shared_root))
+            .layer(DefaultBodyLimit::disable());
         let (shutdown, shutdown_signal) = oneshot::channel();
         let task = tokio::spawn(async move {
             axum::serve(listener, app)
@@ -274,6 +276,9 @@ async fn serve_directory_listing(
     request: Request<Body>,
     next: Next,
 ) -> Response {
+    if request.method() == Method::POST {
+        return receive_uploads(&state, request).await;
+    }
     if request.method() != Method::GET {
         return next.run(request).await;
     }
@@ -315,6 +320,190 @@ async fn serve_directory_listing(
     match render_listing(&state, &directory, &request_path).await {
         Some(listing) => Html(listing).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn receive_uploads(state: &ListingState, request: Request<Body>) -> Response {
+    if !state.allow_uploads {
+        return (
+            StatusCode::FORBIDDEN,
+            "Uploads are turned off for this folder. Ask the host to enable uploads, then try again.",
+        )
+            .into_response();
+    }
+
+    let request_path = request.uri().path().to_owned();
+    let Some(directory) = resolve_request_path(&state.root, &request_path).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if !tokio::fs::metadata(&directory)
+        .await
+        .is_ok_and(|metadata| metadata.is_dir())
+    {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    let mut multipart = match Multipart::from_request(request, &()).await {
+        Ok(multipart) => multipart,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "Porta couldn't read that upload. Choose the files and try again.",
+            )
+                .into_response();
+        }
+    };
+    let mut uploaded = false;
+
+    loop {
+        let mut field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "The upload was interrupted. Choose the files and try again.",
+                )
+                    .into_response();
+            }
+        };
+        if field.name() != Some("files") {
+            continue;
+        }
+        let Some(name) = field.file_name().and_then(safe_upload_name) else {
+            return (
+                StatusCode::BAD_REQUEST,
+                "One file has an invalid name. Rename it, then try again.",
+            )
+                .into_response();
+        };
+        let (mut file, path) = match reserve_upload_file(&directory, &name).await {
+            Ok(reserved) => reserved,
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Porta couldn't prepare that upload. Ask the host to check free disk space, then try again.",
+                )
+                    .into_response();
+            }
+        };
+        let mut written = 0_u64;
+
+        loop {
+            let chunk = match field.chunk().await {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break,
+                Err(_) => {
+                    drop(file);
+                    let _ = tokio::fs::remove_file(&path).await;
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        "The upload was interrupted. Choose the files and try again.",
+                    )
+                        .into_response();
+                }
+            };
+            written = match checked_upload_size(written, chunk.len()) {
+                Some(total) => total,
+                _ => {
+                    drop(file);
+                    let _ = tokio::fs::remove_file(&path).await;
+                    return (
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "This file is larger than 2 GB. Choose a smaller file and try again.",
+                    )
+                        .into_response();
+                }
+            };
+            if file.write_all(&chunk).await.is_err() {
+                drop(file);
+                let _ = tokio::fs::remove_file(&path).await;
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Porta couldn't save that file. Ask the host to check free disk space, then try again.",
+                )
+                    .into_response();
+            }
+        }
+
+        if file.flush().await.is_err() {
+            drop(file);
+            let _ = tokio::fs::remove_file(&path).await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Porta couldn't finish saving that file. Ask the host to check free disk space, then try again.",
+            )
+                .into_response();
+        }
+        uploaded = true;
+    }
+
+    if !uploaded {
+        return (
+            StatusCode::BAD_REQUEST,
+            "Choose at least one file, then try again.",
+        )
+            .into_response();
+    }
+    Redirect::to(&request_path).into_response()
+}
+
+fn checked_upload_size(written: u64, chunk_size: usize) -> Option<u64> {
+    written
+        .checked_add(chunk_size as u64)
+        .filter(|total| *total <= MAX_UPLOAD_BYTES)
+}
+
+fn safe_upload_name(name: &str) -> Option<String> {
+    if name.is_empty()
+        || matches!(name, "." | "..")
+        || name.contains(['/', '\\'])
+        || name.chars().any(char::is_control)
+    {
+        return None;
+    }
+    Some(name.to_owned())
+}
+
+async fn reserve_upload_file(
+    directory: &Path,
+    requested_name: &str,
+) -> std::io::Result<(tokio::fs::File, PathBuf)> {
+    let mut copy = 1_u64;
+    loop {
+        let name = collision_name(requested_name, copy);
+        let path = directory.join(name);
+        match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .await
+        {
+            Ok(file) => return Ok((file, path)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                copy = copy.checked_add(1).ok_or_else(|| {
+                    std::io::Error::other("upload copy number exceeded its supported range")
+                })?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn collision_name(requested_name: &str, copy: u64) -> String {
+    if copy == 1 {
+        return requested_name.to_owned();
+    }
+    let path = Path::new(requested_name);
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or(requested_name);
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some(extension) if !extension.is_empty() => {
+            format!("{stem} ({copy}).{extension}")
+        }
+        _ => format!("{stem} ({copy})"),
     }
 }
 
@@ -521,7 +710,7 @@ mod tests {
     use tempfile::tempdir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    use super::{FileServer, FileServerConfig};
+    use super::{checked_upload_size, FileServer, FileServerConfig, MAX_UPLOAD_BYTES};
 
     struct HttpResponse {
         status: u16,
@@ -530,11 +719,23 @@ mod tests {
     }
 
     async fn request(address: SocketAddr, path: &str, headers: &[(&str, &str)]) -> HttpResponse {
+        request_with_body(address, "GET", path, headers, &[]).await
+    }
+
+    async fn request_with_body(
+        address: SocketAddr,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> HttpResponse {
         let mut stream = tokio::net::TcpStream::connect(address)
             .await
             .expect("test server should accept a connection");
-        let mut request =
-            format!("GET {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n");
+        let mut request = format!(
+            "{method} {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nContent-Length: {}\r\n",
+            body.len()
+        );
         for (name, value) in headers {
             request.push_str(name);
             request.push_str(": ");
@@ -546,6 +747,10 @@ mod tests {
             .write_all(request.as_bytes())
             .await
             .expect("test request should write");
+        stream
+            .write_all(body)
+            .await
+            .expect("test request body should write");
 
         let mut bytes = Vec::new();
         stream
@@ -574,6 +779,16 @@ mod tests {
             headers,
             body: bytes[header_end + 4..].to_vec(),
         }
+    }
+
+    fn multipart_file(boundary: &str, filename: &str, contents: &[u8]) -> Vec<u8> {
+        let mut body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"files\"; filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .into_bytes();
+        body.extend_from_slice(contents);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        body
     }
 
     #[tokio::test]
@@ -854,5 +1069,90 @@ mod tests {
         assert_eq!(allowed.body, b"private");
 
         server.stop().await.expect("protected server should stop");
+    }
+
+    #[tokio::test]
+    async fn uploads_to_the_current_folder_without_overwriting() {
+        assert_eq!(
+            checked_upload_size(MAX_UPLOAD_BYTES - 1, 1),
+            Some(MAX_UPLOAD_BYTES)
+        );
+        assert_eq!(checked_upload_size(MAX_UPLOAD_BYTES, 1), None);
+
+        let root = tempdir().expect("upload folder should be created");
+        let nested = root.path().join("nested");
+        tokio::fs::create_dir(&nested)
+            .await
+            .expect("upload target should be created");
+        tokio::fs::write(nested.join("report.txt"), b"original")
+            .await
+            .expect("original file should be written");
+        let server =
+            FileServer::start(FileServerConfig::new(root.path(), "Uploads").allow_uploads(true))
+                .await
+                .expect("upload server should start");
+        let boundary = "porta-upload-boundary";
+        let uploaded_bytes = b"new\0binary\xffcontents";
+        let body = multipart_file(boundary, "report.txt", uploaded_bytes);
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+
+        let response = request_with_body(
+            server.address(),
+            "POST",
+            "/nested/",
+            &[("Content-Type", &content_type)],
+            &body,
+        )
+        .await;
+        assert_eq!(response.status, 303);
+        assert_eq!(
+            response.headers.get("location").map(String::as_str),
+            Some("/nested/")
+        );
+        assert_eq!(
+            tokio::fs::read(nested.join("report.txt"))
+                .await
+                .expect("original file should remain readable"),
+            b"original"
+        );
+        assert_eq!(
+            tokio::fs::read(nested.join("report (2).txt"))
+                .await
+                .expect("collision-safe upload should be readable"),
+            uploaded_bytes
+        );
+
+        let unsafe_body = multipart_file(boundary, "../../escape.txt", b"escape");
+        let unsafe_response = request_with_body(
+            server.address(),
+            "POST",
+            "/nested/",
+            &[("Content-Type", &content_type)],
+            &unsafe_body,
+        )
+        .await;
+        assert_eq!(unsafe_response.status, 400);
+        assert!(!root.path().join("escape.txt").exists());
+
+        let disabled_root = tempdir().expect("disabled upload folder should be created");
+        let disabled = FileServer::start(FileServerConfig::new(disabled_root.path(), "Disabled"))
+            .await
+            .expect("disabled upload server should start");
+        let disabled_response = request_with_body(
+            disabled.address(),
+            "POST",
+            "/",
+            &[("Content-Type", &content_type)],
+            &body,
+        )
+        .await;
+        assert_eq!(disabled_response.status, 403);
+        assert!(!disabled_root.path().join("report.txt").exists());
+
+        server.stop().await.expect("upload server should stop");
+        disabled
+            .stop()
+            .await
+            .expect("disabled upload server should stop");
     }
 }
