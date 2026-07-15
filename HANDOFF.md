@@ -218,7 +218,7 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 - [x] Tunnel lifecycle, retry, local-port binding, URL readiness, visitor headers, live-profile restarts, and cleanup are provider-neutral
 - [x] Rust, TypeScript, clippy, formatting, browser UI, migration, secret-persistence, path, and process-lifecycle gates pass locally
 - [x] Local Apple-silicon 1.2.0 DMG is ad-hoc signed, mounts with version metadata intact, starts and quits through the installed-app path, leaves no orphan, and remains below 25 MB
-- [ ] Version 1.2.0 release contains refreshed Apple-silicon DMG and Windows x64 setup EXE with verified SHA-256 attachments, and GitHub Pages publishes the final checksums
+- [x] Version 1.2.0 release contains refreshed Apple-silicon DMG and Windows x64 setup EXE with verified SHA-256 attachments, and GitHub Pages publishes the final checksums
 
 ---
 
