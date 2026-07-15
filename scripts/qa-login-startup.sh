@@ -114,6 +114,7 @@ codesign --verify --deep --strict "$qa_root/Porta.app"
 
 mkdir -p "$qa_root/Shared Folder" "$store_dir"
 printf 'Porta signed login startup fixture\n' >"$qa_root/Shared Folder/fixture.txt"
+printf 'Porta phone download fixture\n' >"$qa_root/Shared Folder/porta-phone-download.bin"
 share_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
 created_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 jq -n \
@@ -238,5 +239,29 @@ done
 if [ "$visitors" -lt 1 ]; then
   echo "The public download did not reach Porta's visitor stats." >&2
   exit 1
+fi
+
+phone_hold=${PORTA_PHONE_QA_HOLD_SECONDS:-0}
+case "$phone_hold" in
+  '' | *[!0-9]*)
+    echo "PORTA_PHONE_QA_HOLD_SECONDS must be a whole number of seconds." >&2
+    exit 1
+    ;;
+esac
+if [ "$phone_hold" -gt 0 ]; then
+  echo "PORTA_PHONE_QA_URL=$url/porta-phone-download.bin"
+  deadline=$(($(date +%s) + phone_hold))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    visitors=$(jq -r --arg id "$share_id" '.shares[] | select(.id == $id) | .stats.visitors' "$store")
+    if [ "$visitors" -ge 2 ]; then
+      echo "Phone QA passed: public download recorded a second visitor IP."
+      break
+    fi
+    sleep 1
+  done
+  if [ "$visitors" -lt 2 ]; then
+    echo "Phone QA timed out before a second visitor IP reached Porta." >&2
+    exit 1
+  fi
 fi
 echo "Signed login QA passed: LaunchAgent=$label pid=$login_pid status=live public_download=ok visitors=$visitors"
