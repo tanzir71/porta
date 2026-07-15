@@ -2,6 +2,20 @@
 
 All notable changes to Porta are documented in this file.
 
+## [1.1.0] - 2026-07-15
+
+### Added
+
+- Native Windows 10/11 x64 support with a per-user NSIS setup executable.
+- Bundled and checksum-verified Windows `cloudflared` sidecar.
+- Windows Credential Manager, startup-app, notification-area, taskbar, File Explorer, and native title-bar integration.
+- Cross-platform GitHub Actions builds that publish macOS and Windows installers with SHA-256 files.
+
+### Changed
+
+- App copy, folder paths, tray icons, process supervision, and atomic persistence now adapt to macOS or Windows without changing the persisted IPC contract.
+- The official landing page now offers platform-specific downloads and trust instructions for Gatekeeper and SmartScreen.
+
 ## [1.0.0] - 2026-07-15
 
 ### Added

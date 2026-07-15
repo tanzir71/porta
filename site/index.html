@@ -5,14 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Porta turns any folder or local web server into a public HTTPS link. Free, account-free, and built for macOS."
+      content="Porta turns any folder or local web server into a public HTTPS link. Free, account-free, and built for Windows and macOS."
     />
     <meta name="theme-color" content="#f7f8fb" />
     <meta property="og:type" content="website" />
     <meta property="og:title" content="Porta — Share a folder. Get a link." />
     <meta
       property="og:description"
-      content="A free, UI-first macOS app for sharing folders and local web servers through public HTTPS links."
+      content="A free, UI-first Windows and macOS app for sharing folders and local web servers through public HTTPS links."
     />
     <meta property="og:image" content="__SITE_URL__/assets/og.png" />
     <meta property="og:image:width" content="1200" />
@@ -21,7 +21,7 @@
     <meta name="twitter:title" content="Porta — Share a folder. Get a link." />
     <meta
       name="twitter:description"
-      content="Free, account-free folder sharing for macOS."
+      content="Free, account-free folder sharing for Windows and macOS."
     />
     <meta name="twitter:image" content="__SITE_URL__/assets/og.png" />
     <link rel="canonical" href="__SITE_URL__/" />
@@ -35,7 +35,7 @@
 
     <div class="release-banner" role="status">
       <span class="release-dot" aria-hidden="true"></span>
-      Porta 1.0 is available for Apple silicon
+      Porta 1.1 is available for Windows and Apple silicon
       <a href="#download">See the release</a>
     </div>
 
@@ -69,7 +69,7 @@
     <main id="main">
       <section class="hero shell" id="top">
         <div class="hero-copy">
-          <div class="eyebrow"><span>●</span> Native macOS app</div>
+          <div class="eyebrow"><span>●</span> Native desktop app</div>
           <h1>Share a folder.<br /><span>Get a link.</span></h1>
           <p class="hero-lede">
             Porta gives any folder—or local web server—a public HTTPS link in
@@ -79,11 +79,11 @@
           <div class="hero-actions">
             <a
               class="button button-primary"
-              href="https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/Porta_1.0.0_aarch64.dmg"
-              data-release-download
+              href="https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/Porta_1.1.0_aarch64.dmg"
+              data-primary-download
             >
               <span class="button-mark" aria-hidden="true">↓</span>
-              Download Porta 1.0
+              <span data-primary-label>Download for macOS</span>
             </a>
             <a
               class="button button-secondary"
@@ -95,7 +95,7 @@
               View source <span aria-hidden="true">↗</span>
             </a>
           </div>
-          <p class="download-note">Apple silicon · macOS · 23 MB · Free forever</p>
+          <p class="download-note" data-primary-note>Apple silicon · macOS · Free forever</p>
 
           <div class="hero-trust" aria-label="Product highlights">
             <span><i aria-hidden="true">✓</i> No account</span>
@@ -173,7 +173,7 @@
 
       <section class="section shell" id="how-it-works">
         <div class="section-heading centered-heading">
-          <p class="kicker">From Finder to the web</p>
+          <p class="kicker">From your desktop to the web</p>
           <h2>Three steps. That’s the whole idea.</h2>
           <p>Porta wraps a powerful tunnel in an interface anyone can use.</p>
         </div>
@@ -183,7 +183,7 @@
             <span class="step-number">01</span>
             <div class="step-icon folder-step" aria-hidden="true"></div>
             <h3>Choose a folder</h3>
-            <p>Drop it into Porta or pick it in Finder. Local ports work too.</p>
+            <p>Drop it into Porta or pick it in your file manager. Local ports work too.</p>
           </article>
           <article class="step-card">
             <span class="step-number">02</span>
@@ -229,7 +229,7 @@
               <span class="feature-label">Access control</span>
               <div class="lock-visual" aria-hidden="true"><span></span></div>
               <h3>Password protection, built in.</h3>
-              <p>Credentials live in macOS Keychain—not in Porta’s settings file.</p>
+            <p>Credentials live in Keychain or Credential Manager—not in Porta’s settings file.</p>
             </article>
 
             <article class="feature feature-resident">
@@ -240,7 +240,7 @@
                 <div class="menu-row"><b>Portfolio</b><span>Turn on</span></div>
               </div>
               <h3>Close the window. Keep sharing.</h3>
-              <p>Porta lives in the menu bar and can restore selected shares at login.</p>
+              <p>Porta lives in the system tray and can restore selected shares at login.</p>
             </article>
 
             <article class="feature feature-stats">
@@ -261,68 +261,50 @@
 
       <section class="section shell install-section" id="install">
         <div class="section-heading centered-heading">
-          <p class="kicker">Install Porta 1.0</p>
+          <p class="kicker">Install Porta 1.1</p>
           <h2>Up and sharing in a minute.</h2>
-          <p>The current release is ad-hoc signed, so macOS needs one manual approval.</p>
+          <p>Choose your platform and review its one-time trust prompt.</p>
         </div>
 
-        <div class="install-layout">
-          <div class="install-steps">
-            <article>
-              <span>1</span>
-              <div><h3>Download the DMG</h3><p>Use the official GitHub Release link on this page.</p></div>
-            </article>
-            <article>
-              <span>2</span>
-              <div><h3>Move Porta to Applications</h3><p>Open the disk image, then drag Porta into the Applications folder.</p></div>
-            </article>
-            <article>
-              <span>3</span>
-              <div><h3>Try opening Porta once</h3><p>macOS will likely say it cannot verify the developer. Dismiss that message.</p></div>
-            </article>
-            <article>
-              <span>4</span>
-              <div>
-                <h3>Choose Open Anyway</h3>
-                <p>
-                  Open <b>System Settings → Privacy &amp; Security</b>, scroll to
-                  <b>Security</b>, click <b>Open Anyway</b>, then confirm with your password.
-                </p>
-              </div>
-            </article>
-          </div>
-
-          <aside class="gatekeeper-card" aria-labelledby="gatekeeper-title">
-            <div class="settings-title">
-              <span class="settings-icon" aria-hidden="true">⚙</span>
-              <div><small>System Settings</small><strong>Privacy &amp; Security</strong></div>
+        <div class="platform-install-grid">
+          <article class="platform-install-card platform-windows">
+            <div class="platform-card-head">
+              <span class="platform-mark" aria-hidden="true">⊞</span>
+              <div><p class="kicker">Windows 10/11</p><h3>Install for your account.</h3></div>
             </div>
-            <div class="settings-panel">
-              <small>Security</small>
-              <p>“Porta” was blocked from use because it is not from an identified developer.</p>
-              <div class="open-row"><span>Only continue if you downloaded Porta here.</span><b>Open Anyway</b></div>
-            </div>
-            <p class="gatekeeper-note">
-              Apple makes this override available for about an hour after a blocked launch.
-            </p>
-            <a
-              href="https://support.apple.com/guide/mac-help/open-an-app-by-overriding-security-settings-mh40617/mac"
-              target="_blank"
-              rel="noreferrer"
-            >
-              Read Apple’s instructions <span aria-hidden="true">↗</span>
+            <ol class="platform-steps">
+              <li><span>1</span><p>Download <b>Porta_1.1.0_x64-setup.exe</b> from the official release.</p></li>
+              <li><span>2</span><p>Run it. If SmartScreen says <b>Windows protected your PC</b>, select <b>More info</b>.</p></li>
+              <li><span>3</span><p>Confirm the file and checksum, then choose <b>Run anyway</b>. No administrator access is required.</p></li>
+            </ol>
+            <a class="button button-primary platform-download" href="https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/Porta_1.1.0_x64-setup.exe" data-download-platform="windows">
+              <span class="button-mark" aria-hidden="true">↓</span> Download Windows setup
             </a>
-          </aside>
+          </article>
+
+          <article class="platform-install-card platform-macos">
+            <div class="platform-card-head">
+              <span class="platform-mark" aria-hidden="true">●</span>
+              <div><p class="kicker">Apple silicon</p><h3>Move Porta to Applications.</h3></div>
+            </div>
+            <ol class="platform-steps">
+              <li><span>1</span><p>Download the DMG, open it, and drag Porta into <b>Applications</b>.</p></li>
+              <li><span>2</span><p>Try opening Porta once, then dismiss the unidentified-developer warning.</p></li>
+              <li><span>3</span><p>Open <b>Privacy &amp; Security</b>, choose <b>Open Anyway</b>, then confirm.</p></li>
+            </ol>
+            <a class="button button-secondary platform-download" href="https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/Porta_1.1.0_aarch64.dmg" data-download-platform="macos">
+              <span class="button-mark" aria-hidden="true">↓</span> Download macOS DMG
+            </a>
+          </article>
         </div>
 
         <div class="integrity-note">
           <span aria-hidden="true">i</span>
           <p>
-            <strong>Why the warning?</strong> This release is ad-hoc signed and has
-            not been reviewed or notarized by Apple. Only override Gatekeeper if
-            you downloaded the DMG from Porta’s official GitHub Release and the
-            checksum below matches. Apple correctly warns that overriding security
-            for untrusted software can be risky.
+            <strong>Why the warning?</strong> The Windows setup is unsigned and the
+            macOS app is ad-hoc signed rather than notarized. Only override
+            SmartScreen or Gatekeeper when the installer came from Porta’s official
+            GitHub Release and its published SHA-256 matches.
           </p>
         </div>
       </section>
@@ -343,7 +325,7 @@
           </div>
           <div class="security-list">
             <article><span>01</span><div><h3>Your settings stay local</h3><p>No Porta account, hosted database, analytics, or telemetry.</p></div></article>
-            <article><span>02</span><div><h3>Passwords use Keychain</h3><p>Plaintext credentials are kept out of the on-disk share store.</p></div></article>
+            <article><span>02</span><div><h3>Passwords use OS credentials</h3><p>Keychain or Credential Manager keeps plaintext credentials out of the share store.</p></div></article>
             <article><span>03</span><div><h3>Shared roots stay contained</h3><p>Traversal and escaping symlinks are rejected by the local server.</p></div></article>
             <article><span>04</span><div><h3>Not production hosting</h3><p>Quick Tunnels have no SLA and remain subject to Cloudflare’s terms.</p></div></article>
           </div>
@@ -356,19 +338,24 @@
             <div class="release-icon"><img src="assets/porta-icon.png" alt="Porta" width="84" height="84" /></div>
             <div>
               <p class="kicker">Official release</p>
-              <h2>Porta 1.0.0</h2>
-              <p>Apple silicon · ad-hoc signed · released July 15, 2026</p>
+              <h2>Porta 1.1.0</h2>
+              <p>Windows x64 + Apple silicon · free forever</p>
             </div>
           </div>
           <div class="release-actions">
             <a
               class="button button-primary"
-              href="https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/Porta_1.0.0_aarch64.dmg"
-              data-release-download
+              href="https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/Porta_1.1.0_x64-setup.exe"
+              data-download-platform="windows"
             >
               <span class="button-mark" aria-hidden="true">↓</span>
-              Download DMG
+              Windows setup
             </a>
+            <a
+              class="button button-secondary"
+              href="https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/Porta_1.1.0_aarch64.dmg"
+              data-download-platform="macos"
+            ><span class="button-mark" aria-hidden="true">↓</span> macOS DMG</a>
             <a
               class="release-notes-link"
               href="https://github.com/__GITHUB_REPOSITORY__/releases/latest"
@@ -377,10 +364,17 @@
               rel="noreferrer"
             >Release notes ↗</a>
           </div>
-          <div class="checksum">
-            <span>SHA-256</span>
-            <code id="checksum-value">d76ba419489c0b3b434b4a28eb6171cfcbb4ad1394f8d98bcb779eb2fcac2257</code>
-            <button type="button" data-copy-checksum aria-label="Copy SHA-256 checksum">Copy</button>
+          <div class="checksum-list">
+            <div class="checksum">
+              <span>Windows SHA-256</span>
+              <code id="windows-checksum-value">Pending v1.1.0 release build</code>
+              <button type="button" data-copy-checksum="windows-checksum-value" aria-label="Copy Windows SHA-256 checksum" disabled>Copy</button>
+            </div>
+            <div class="checksum">
+              <span>macOS SHA-256</span>
+              <code id="macos-checksum-value">Pending v1.1.0 release build</code>
+              <button type="button" data-copy-checksum="macos-checksum-value" aria-label="Copy macOS SHA-256 checksum" disabled>Copy</button>
+            </div>
           </div>
         </div>
       </section>
@@ -395,23 +389,22 @@
             <summary>Does Porta upload my files somewhere?</summary>
             <p>
               No Porta storage service exists. While a share is live, files travel
-              from your Mac through Cloudflare’s tunnel to people using the link.
+              from your computer through Cloudflare’s tunnel to people using the link.
               Stop the share and that temporary URL stops serving your folder.
             </p>
           </details>
           <details>
-            <summary>Why does macOS show a security warning?</summary>
+            <summary>Why does my computer show a security warning?</summary>
             <p>
-              Version 1.0 is ad-hoc signed rather than Developer ID signed and
-              notarized. macOS therefore cannot verify the developer or confirm that
-              Apple scanned the app. Follow the Open Anyway steps above only for a
-              DMG downloaded from this official repository.
+              The Windows setup is not Authenticode signed, and the macOS app is
+              ad-hoc signed rather than notarized. Follow the platform instructions
+              above only for an installer downloaded from this official repository.
             </p>
           </details>
           <details>
             <summary>Does closing the window stop my links?</summary>
             <p>
-              No. Porta keeps running quietly in the menu bar. Turn individual shares
+              No. Porta keeps running quietly in the system tray. Turn individual shares
               off there, or choose Quit Porta to stop the app and all active tunnels.
             </p>
           </details>
@@ -432,9 +425,9 @@
           <div><p>One folder. One switch. One link.</p><h2>Open the door with Porta.</h2></div>
           <a
             class="button button-white"
-            href="https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/Porta_1.0.0_aarch64.dmg"
-            data-release-download
-          >Download Porta 1.0</a>
+            href="https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/Porta_1.1.0_aarch64.dmg"
+            data-primary-download
+          ><span data-primary-label>Download for macOS</span></a>
         </div>
       </section>
     </main>
@@ -442,7 +435,7 @@
     <footer class="footer">
       <div class="shell footer-inner">
         <a class="brand footer-brand" href="#top"><img src="assets/porta-icon.png" alt="" width="32" height="32" /><span>Porta</span></a>
-        <p>Free, account-free folder sharing for macOS.</p>
+        <p>Free, account-free folder sharing for Windows and macOS.</p>
         <div class="footer-links">
           <a href="https://github.com/__GITHUB_REPOSITORY__" data-repo-link target="_blank" rel="noreferrer">Source</a>
           <a href="https://github.com/__GITHUB_REPOSITORY__/releases/latest" data-release-page target="_blank" rel="noreferrer">Releases</a>
@@ -460,10 +453,10 @@
     </footer>
 
     <div class="mobile-download">
-      <div><strong>Porta 1.0</strong><span>Apple silicon · 23 MB</span></div>
+      <div><strong>Porta 1.1</strong><span data-primary-note>Apple silicon · macOS</span></div>
       <a
-        href="https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/Porta_1.0.0_aarch64.dmg"
-        data-release-download
+        href="https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/Porta_1.1.0_aarch64.dmg"
+        data-primary-download
       >Download</a>
     </div>
 

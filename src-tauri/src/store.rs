@@ -1,9 +1,12 @@
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
     sync::Mutex,
 };
+
+#[cfg(unix)]
+use std::fs::File;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
@@ -116,11 +119,8 @@ fn persist_state(path: &Path, state: &PersistedState) -> Result<(), String> {
             .open(&temporary_path)?;
         temporary_file.write_all(&bytes)?;
         temporary_file.sync_all()?;
-        fs::rename(&temporary_path, path)?;
-
-        if let Some(parent) = path.parent() {
-            File::open(parent)?.sync_all()?;
-        }
+        replace_file(&temporary_path, path)?;
+        sync_parent(path)?;
         Ok(())
     })();
 
@@ -129,6 +129,64 @@ fn persist_state(path: &Path, state: &PersistedState) -> Result<(), String> {
         return Err(SAVE_ERROR.to_owned());
     }
 
+    Ok(())
+}
+
+#[cfg(unix)]
+fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(source, destination)
+}
+
+#[cfg(windows)]
+fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source: Vec<u16> = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let destination: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let moved = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    if destination.exists() {
+        fs::remove_file(destination)?;
+    }
+    fs::rename(source, destination)
+}
+
+#[cfg(unix)]
+fn sync_parent(path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        File::open(parent)?.sync_all()?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_parent(_path: &Path) -> std::io::Result<()> {
+    // The temporary file is flushed before Windows performs a write-through replacement.
     Ok(())
 }
 
@@ -159,6 +217,12 @@ mod tests {
                 Ok(())
             })
             .expect("state should persist");
+        store
+            .update(|shares, _| {
+                shares[0].name = "Updated on every platform".to_owned();
+                Ok(())
+            })
+            .expect("an existing store file should be replaced atomically");
 
         let store_path = data_dir.path().join(STORE_FILE_NAME);
         let saved: Value =
@@ -166,6 +230,7 @@ mod tests {
                 .expect("saved store should contain complete JSON");
         assert_eq!(saved["version"], 1);
         assert_eq!(saved["shares"][0]["id"], share.id);
+        assert_eq!(saved["shares"][0]["name"], "Updated on every platform");
         assert_eq!(saved["settings"]["theme"], "dark");
         assert!(!temporary_path(&store_path).exists());
 
@@ -177,7 +242,8 @@ mod tests {
             .read(|shares, settings| (shares.to_vec(), settings.theme))
             .expect("reloaded state should be readable");
 
-        assert_eq!(shares, vec![share]);
+        assert_eq!(shares[0].id, share.id);
+        assert_eq!(shares[0].name, "Updated on every platform");
         assert_eq!(theme, Theme::Dark);
         assert!(!temporary_path(&store_path).exists());
     }

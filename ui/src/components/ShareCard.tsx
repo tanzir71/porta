@@ -4,6 +4,7 @@ import {
   FolderIcon, GlobeIcon, CopyIcon, CheckIcon, LockIcon,
   TrashIcon, PencilIcon, EyeIcon, ArrowUpDownIcon, AlertIcon,
 } from "./Icons";
+import { openFolderLabel } from "../lib/platform";
 
 function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -58,7 +59,7 @@ export function ShareCard({ share, onToggle, onCopy, onOpenUrl, onReveal, onEdit
           </div>
           <div
             className="share-path"
-            title={share.kind === "folder" ? `Reveal in Finder: ${share.path}` : undefined}
+            title={share.kind === "folder" ? `${openFolderLabel}: ${share.path}` : undefined}
             onClick={() => share.path && onReveal(share.path)}
           >
             {share.kind === "folder" ? share.path : `localhost:${share.port}`}

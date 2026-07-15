@@ -1,0 +1,238 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CLOUDFLARED_VERSION: "2026.7.1"
+  CLOUDFLARED_WINDOWS_SHA256: "ccb0756de288d3c2c076d19764ca53e0849a10f2dd9c23f8656ac42bdeb45001"
+  CLOUDFLARED_MACOS_SHA256: "6d4b59383cdad387834d7ae5704fc512882b2d078074bf5770e02b186a0981ed"
+
+jobs:
+  windows:
+    name: Build Windows x64 setup
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out tag
+        uses: actions/checkout@v6
+
+      - name: Validate release version
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          $config = Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json
+          if ($config.version -ne $version) { throw "Tag version $version does not match Tauri version $($config.version)" }
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          cache-on-failure: true
+
+      - name: Install UI dependencies
+        run: npm ci --prefix ui
+
+      - name: Download and verify cloudflared
+        shell: pwsh
+        run: |
+          $destination = "src-tauri/binaries/cloudflared-x86_64-pc-windows-msvc.exe"
+          $url = "https://github.com/cloudflare/cloudflared/releases/download/$env:CLOUDFLARED_VERSION/cloudflared-windows-amd64.exe"
+          Invoke-WebRequest -Uri $url -OutFile $destination
+          $actual = (Get-FileHash -Algorithm SHA256 $destination).Hash.ToLowerInvariant()
+          if ($actual -ne $env:CLOUDFLARED_WINDOWS_SHA256) { throw "cloudflared SHA-256 mismatch: $actual" }
+
+      - name: Run Windows quality gates
+        run: |
+          cargo fmt --manifest-path src-tauri/Cargo.toml --check
+          npm run test --prefix ui
+          npm run build --prefix ui
+          cargo test --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+          cargo clippy --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc --all-targets -- -D warnings
+
+      - name: Build NSIS installer
+        uses: tauri-apps/tauri-action@v1
+        with:
+          args: --target x86_64-pc-windows-msvc --bundles nsis
+
+      - name: Stage installer and checksum
+        shell: pwsh
+        run: |
+          $source = Get-ChildItem "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
+          if (-not $source) { throw "NSIS installer was not produced" }
+          New-Item -ItemType Directory -Force release-assets | Out-Null
+          $installer = "release-assets/Porta_${env:RELEASE_VERSION}_x64-setup.exe"
+          Copy-Item $source.FullName $installer
+          $hash = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
+          "$hash  Porta_${env:RELEASE_VERSION}_x64-setup.exe" | Set-Content -NoNewline "$installer.sha256"
+
+      - name: Upload Windows assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-assets
+          path: release-assets/*
+          if-no-files-found: error
+
+  macos:
+    name: Build Apple-silicon DMG
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out tag
+        uses: actions/checkout@v6
+
+      - name: Validate release version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          config_version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          test "$version" = "$config_version"
+          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+          components: rustfmt, clippy
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          cache-on-failure: true
+
+      - name: Install UI dependencies
+        run: npm ci --prefix ui
+
+      - name: Download and verify cloudflared
+        shell: bash
+        run: |
+          curl -fL --retry 3 -o /tmp/cloudflared.tgz "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-darwin-arm64.tgz"
+          actual="$(shasum -a 256 /tmp/cloudflared.tgz | awk '{print $1}')"
+          test "$actual" = "$CLOUDFLARED_MACOS_SHA256"
+          tar -xzf /tmp/cloudflared.tgz -C /tmp
+          mv /tmp/cloudflared src-tauri/binaries/cloudflared-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/cloudflared-aarch64-apple-darwin
+
+      - name: Run macOS quality gates
+        run: |
+          cargo fmt --manifest-path src-tauri/Cargo.toml --check
+          npm run test --prefix ui
+          npm run build --prefix ui
+          cargo test --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+          cargo clippy --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin --all-targets -- -D warnings
+
+      - name: Build ad-hoc-signed DMG
+        uses: tauri-apps/tauri-action@v1
+        with:
+          args: --target aarch64-apple-darwin --bundles dmg
+
+      - name: Stage DMG and checksum
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          source_dmg="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
+          test -n "$source_dmg"
+          dmg="release-assets/Porta_${RELEASE_VERSION}_aarch64.dmg"
+          cp "$source_dmg" "$dmg"
+          hash="$(shasum -a 256 "$dmg" | awk '{print $1}')"
+          printf '%s  %s' "$hash" "Porta_${RELEASE_VERSION}_aarch64.dmg" > "$dmg.sha256"
+
+      - name: Upload macOS assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release-assets
+          path: release-assets/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish official release
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out tag
+        uses: actions/checkout@v6
+
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*-release-assets"
+          path: release-assets
+          merge-multiple: true
+
+      - name: Validate asset set and checksums
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          expected=(
+            "Porta_${version}_aarch64.dmg"
+            "Porta_${version}_aarch64.dmg.sha256"
+            "Porta_${version}_x64-setup.exe"
+            "Porta_${version}_x64-setup.exe.sha256"
+          )
+          test "$(find release-assets -maxdepth 1 -type f | wc -l | tr -d ' ')" = "4"
+          for asset in "${expected[@]}"; do test -f "release-assets/$asset"; done
+          (cd release-assets && sha256sum -c "Porta_${version}_aarch64.dmg.sha256")
+          (cd release-assets && sha256sum -c "Porta_${version}_x64-setup.exe.sha256")
+
+      - name: Create draft and publish latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          notes="release-notes/${GITHUB_REF_NAME}.md"
+          test -f "$notes"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release-assets/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" release-assets/* \
+              --draft \
+              --verify-tag \
+              --title "Porta $version" \
+              --notes-file "$notes"
+          fi
+          gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease=false --latest
+
+      - name: Verify public downloads
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          for asset in \
+            "Porta_${version}_aarch64.dmg" \
+            "Porta_${version}_aarch64.dmg.sha256" \
+            "Porta_${version}_x64-setup.exe" \
+            "Porta_${version}_x64-setup.exe.sha256"; do
+            curl -fIL --retry 6 --retry-delay 5 "$base/$asset"
+          done

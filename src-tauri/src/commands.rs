@@ -20,6 +20,36 @@ use crate::{
 const MISSING_SHARE: &str = "That share no longer exists. Return to the main window and try again.";
 const FOLDER_MISSING: &str = "This folder was moved or deleted. Pick it again to reshare.";
 
+#[cfg(target_os = "windows")]
+const REVEAL_ERROR: &str =
+    "Porta couldn't show this folder in File Explorer. Open File Explorer, then try again.";
+#[cfg(target_os = "macos")]
+const REVEAL_ERROR: &str =
+    "Porta couldn't show this folder in Finder. Open Finder, then try again.";
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+const REVEAL_ERROR: &str =
+    "Porta couldn't show this folder. Open your file manager, then try again.";
+
+#[cfg(target_os = "windows")]
+const FOLDER_NAME_ERROR: &str =
+    "Porta can't use this folder name. Rename the folder in File Explorer, then try again.";
+#[cfg(target_os = "macos")]
+const FOLDER_NAME_ERROR: &str =
+    "Porta can't use this folder name. Rename the folder in Finder, then try again.";
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+const FOLDER_NAME_ERROR: &str =
+    "Porta can't use this folder name. Rename it in your file manager, then try again.";
+
+#[cfg(target_os = "windows")]
+const STARTUP_ERROR: &str =
+    "Porta couldn't update startup apps. Open Windows Startup Apps settings, then try again.";
+#[cfg(target_os = "macos")]
+const STARTUP_ERROR: &str =
+    "Porta couldn't update Login Items. Open System Settings, then try again.";
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+const STARTUP_ERROR: &str =
+    "Porta couldn't update startup apps. Open your system's startup settings, then try again.";
+
 #[tauri::command]
 pub(crate) fn list_shares(store: State<'_, Store>) -> Result<Vec<Share>, String> {
     store.read(|shares, _| shares.to_vec())
@@ -319,9 +349,9 @@ pub(crate) fn reveal_in_finder(app: AppHandle, path: String) -> Result<(), Strin
         return Err(FOLDER_MISSING.to_owned());
     }
 
-    app.opener().reveal_item_in_dir(path).map_err(|_| {
-        "Porta couldn't open Finder. Open the folder from Finder and try again.".to_owned()
-    })
+    app.opener()
+        .reveal_item_in_dir(path)
+        .map_err(|_| REVEAL_ERROR.to_owned())
 }
 
 #[tauri::command]
@@ -464,9 +494,9 @@ fn validate_password(password: Option<&str>) -> Result<(), String> {
 }
 
 fn path_to_string(path: PathBuf) -> Result<String, String> {
-    path.into_os_string().into_string().map_err(|_| {
-        "Porta can't use this folder name. Rename the folder in Finder, then try again.".to_owned()
-    })
+    path.into_os_string()
+        .into_string()
+        .map_err(|_| FOLDER_NAME_ERROR.to_owned())
 }
 
 fn emit_app_event<R: Runtime>(app: &AppHandle<R>, event: AppEvent) -> Result<(), String> {
@@ -504,9 +534,8 @@ fn apply_setting_side_effects(
         apply_autolaunch(app, next.launch_at_login)?;
     }
 
-    #[cfg(target_os = "macos")]
     if previous.show_dock_icon != next.show_dock_icon {
-        apply_dock_policy(app, next.show_dock_icon)?;
+        apply_app_icon_policy(app, next.show_dock_icon)?;
     }
 
     Ok(())
@@ -518,31 +547,38 @@ pub(crate) fn apply_initial_app_settings(app: &AppHandle) -> Result<(), String> 
         .read(|_, settings| (settings.launch_at_login, settings.show_dock_icon))?;
     apply_autolaunch(app, launch_at_login)?;
 
-    #[cfg(target_os = "macos")]
-    apply_dock_policy(app, show_dock_icon)?;
+    apply_app_icon_policy(app, show_dock_icon)?;
 
     Ok(())
 }
 
 fn apply_autolaunch(app: &AppHandle, enabled: bool) -> Result<(), String> {
-    const ERROR: &str = "Porta couldn't update Login Items. Open System Settings, then try again.";
     let autolaunch = app.autolaunch();
+    let current = autolaunch
+        .is_enabled()
+        .map_err(|_| STARTUP_ERROR.to_owned())?;
+    if current == enabled {
+        return Ok(());
+    }
+
     if enabled {
         autolaunch.enable()
     } else {
         autolaunch.disable()
     }
-    .map_err(|_| ERROR.to_owned())?;
+    .map_err(|_| STARTUP_ERROR.to_owned())?;
 
-    let actual = autolaunch.is_enabled().map_err(|_| ERROR.to_owned())?;
+    let actual = autolaunch
+        .is_enabled()
+        .map_err(|_| STARTUP_ERROR.to_owned())?;
     if actual != enabled {
-        return Err(ERROR.to_owned());
+        return Err(STARTUP_ERROR.to_owned());
     }
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
-fn apply_dock_policy(app: &AppHandle, show_dock_icon: bool) -> Result<(), String> {
+fn apply_app_icon_policy(app: &AppHandle, show_dock_icon: bool) -> Result<(), String> {
     let policy = match dock_policy(show_dock_icon) {
         DockPolicy::Regular => tauri::ActivationPolicy::Regular,
         DockPolicy::Accessory => tauri::ActivationPolicy::Accessory,
@@ -550,6 +586,29 @@ fn apply_dock_policy(app: &AppHandle, show_dock_icon: bool) -> Result<(), String
     app.set_activation_policy(policy).map_err(|_| {
         "Porta couldn't update the Dock icon. Quit and reopen Porta, then try again.".to_owned()
     })
+}
+
+#[cfg(target_os = "windows")]
+fn apply_app_icon_policy(app: &AppHandle, show_taskbar_icon: bool) -> Result<(), String> {
+    let window = app.get_webview_window("main").ok_or_else(|| {
+        "Porta couldn't find its main window. Quit and reopen Porta, then try again.".to_owned()
+    })?;
+    window
+        .set_skip_taskbar(skip_taskbar(show_taskbar_icon))
+        .map_err(|_| {
+            "Porta couldn't update the taskbar icon. Quit and reopen Porta, then try again."
+                .to_owned()
+        })
+}
+
+#[cfg(target_os = "windows")]
+const fn skip_taskbar(show_taskbar_icon: bool) -> bool {
+    !show_taskbar_icon
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn apply_app_icon_policy(_app: &AppHandle, _show_app_icon: bool) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -762,6 +821,13 @@ mod tests {
     fn dock_visibility_maps_to_the_expected_live_activation_policy() {
         assert_eq!(super::dock_policy(true), super::DockPolicy::Regular);
         assert_eq!(super::dock_policy(false), super::DockPolicy::Accessory);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn taskbar_visibility_maps_to_the_expected_skip_flag() {
+        assert!(!super::skip_taskbar(true));
+        assert!(super::skip_taskbar(false));
     }
 
     #[test]

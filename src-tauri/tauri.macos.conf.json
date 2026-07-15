@@ -1,0 +1,26 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Porta",
+        "width": 480,
+        "height": 640,
+        "minWidth": 420,
+        "minHeight": 520,
+        "resizable": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "dragDropEnabled": true
+      }
+    ]
+  },
+  "bundle": {
+    "targets": ["dmg"],
+    "icon": ["icons/icon.icns", "icons/icon.png"],
+    "macOS": {
+      "signingIdentity": "-"
+    }
+  }
+}

@@ -1,0 +1,136 @@
+name: Windows
+
+on:
+  pull_request:
+    paths:
+      - "ui/**"
+      - "src-tauri/**"
+      - ".github/workflows/windows.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CLOUDFLARED_VERSION: "2026.7.1"
+  CLOUDFLARED_WINDOWS_SHA256: "ccb0756de288d3c2c076d19764ca53e0849a10f2dd9c23f8656ac42bdeb45001"
+  RELEASE_VERSION: "1.1.0"
+
+jobs:
+  build-and-smoke-test:
+    name: Windows x64 build and installed-app smoke test
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          cache-on-failure: true
+
+      - name: Install UI dependencies
+        run: npm ci --prefix ui
+
+      - name: Download and verify cloudflared
+        shell: pwsh
+        run: |
+          $destination = "src-tauri/binaries/cloudflared-x86_64-pc-windows-msvc.exe"
+          $url = "https://github.com/cloudflare/cloudflared/releases/download/$env:CLOUDFLARED_VERSION/cloudflared-windows-amd64.exe"
+          Invoke-WebRequest -Uri $url -OutFile $destination
+          $actual = (Get-FileHash -Algorithm SHA256 $destination).Hash.ToLowerInvariant()
+          if ($actual -ne $env:CLOUDFLARED_WINDOWS_SHA256) {
+            throw "cloudflared SHA-256 mismatch: expected $env:CLOUDFLARED_WINDOWS_SHA256, got $actual"
+          }
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+      - name: Build UI
+        run: |
+          npm run test --prefix ui
+          npm run build --prefix ui
+
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+
+      - name: Run Clippy with warnings denied
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc --all-targets -- -D warnings
+
+      - name: Build NSIS installer
+        uses: tauri-apps/tauri-action@v1
+        with:
+          args: --target x86_64-pc-windows-msvc --bundles nsis
+
+      - name: Stage installer and checksum
+        shell: pwsh
+        run: |
+          $source = Get-ChildItem "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
+          if (-not $source) { throw "NSIS installer was not produced" }
+          New-Item -ItemType Directory -Force release-assets | Out-Null
+          $installer = "release-assets/Porta_${env:RELEASE_VERSION}_x64-setup.exe"
+          Copy-Item $source.FullName $installer
+          $hash = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
+          "$hash  Porta_${env:RELEASE_VERSION}_x64-setup.exe" | Set-Content -NoNewline "$installer.sha256"
+
+      - name: Silently install, launch, quit, and uninstall Porta
+        shell: pwsh
+        run: |
+          $installer = (Resolve-Path "release-assets/Porta_${env:RELEASE_VERSION}_x64-setup.exe").Path
+          $install = Start-Process -FilePath $installer -ArgumentList "/S" -PassThru -Wait
+          if ($install.ExitCode -ne 0) { throw "Installer exited with $($install.ExitCode)" }
+
+          $appRoot = Join-Path $env:LOCALAPPDATA "Porta"
+          $appExe = Join-Path $appRoot "porta.exe"
+          if (-not (Test-Path $appExe)) { throw "Installed Porta executable is missing at $appExe" }
+          $helper = Get-ChildItem $appRoot -Recurse -Filter "cloudflared*.exe" | Select-Object -First 1
+          if (-not $helper) { throw "Bundled cloudflared helper is missing from the installation" }
+
+          $stdout = Join-Path $env:RUNNER_TEMP "porta-stdout.log"
+          $stderr = Join-Path $env:RUNNER_TEMP "porta-stderr.log"
+          $porta = Start-Process -FilePath $appExe -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+          Start-Sleep -Seconds 5
+          if ($porta.HasExited) {
+            Write-Host "Porta exit code: $($porta.ExitCode)"
+            if (Test-Path $stdout) { Get-Content $stdout }
+            if (Test-Path $stderr) { Get-Content $stderr }
+            throw "Installed Porta exited during startup"
+          }
+          Start-Process -FilePath $appExe -ArgumentList "--quit" -Wait
+          if (-not $porta.WaitForExit(15000)) { throw "Porta did not quit cleanly" }
+          Start-Sleep -Seconds 2
+
+          if (Get-Process porta -ErrorAction SilentlyContinue) { throw "Porta process remains after quit" }
+          if (Get-Process cloudflared -ErrorAction SilentlyContinue) { throw "cloudflared process remains after quit" }
+
+          $uninstaller = Get-ChildItem $appRoot -Recurse -Filter "uninstall.exe" | Select-Object -First 1
+          if (-not $uninstaller) { throw "Porta uninstaller is missing" }
+          $uninstall = Start-Process -FilePath $uninstaller.FullName -ArgumentList "/S" -PassThru -Wait
+          if ($uninstall.ExitCode -ne 0) { throw "Uninstaller exited with $($uninstall.ExitCode)" }
+          Start-Sleep -Seconds 2
+          if (Test-Path $appExe) { throw "Porta executable remains after uninstall" }
+
+      - name: Upload Windows release assets
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: porta-windows-${{ env.RELEASE_VERSION }}
+          path: release-assets/*
+          if-no-files-found: error

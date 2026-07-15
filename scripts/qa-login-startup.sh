@@ -3,7 +3,7 @@
 set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
-dmg=${1:-"$repo_root/src-tauri/target/release/bundle/dmg/Porta_1.0.0_aarch64.dmg"}
+dmg=${1:-"$repo_root/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/Porta_1.1.0_aarch64.dmg"}
 uid=$(id -u)
 store_dir="$HOME/Library/Application Support/com.porta.app"
 store="$store_dir/store.json"

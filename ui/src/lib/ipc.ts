@@ -42,7 +42,7 @@ export interface CreateShareInput {
   path?: string; // required when kind=folder
   port?: number; // required when kind=port
   name?: string;
-  password?: string; // plaintext, backend stores in OS keychain
+  password?: string; // plaintext, backend stores in the OS credential store
   showListing?: boolean; // default true
   allowUploads?: boolean; // default false
   autoStart?: boolean; // default false
@@ -60,7 +60,7 @@ export interface UpdateShareInput {
 export interface Settings {
   launchAtLogin: boolean; // register/unregister OS login item
   autoStartShares: boolean; // master switch: honor per-share autoStart
-  showDockIcon: boolean; // false = menu-bar-only app
+  showDockIcon: boolean; // false = tray-only app; persisted name retained for compatibility
   notifyOnFirstVisitor: boolean; // native notification on first visit
   copyUrlOnStart: boolean; // auto-copy public URL to clipboard when live
   theme: "system" | "light" | "dark";
@@ -89,7 +89,7 @@ export interface Ipc {
   updateShare(id: string, patch: UpdateShareInput): Promise<Share>;
   /** Open the native folder picker. Resolves null if the user cancels. */
   pickFolder(): Promise<string | null>;
-  /** Reveal the shared folder in Finder. */
+  /** Reveal the shared folder in the platform file manager. */
   revealInFinder(path: string): Promise<void>;
   /** Open a URL in the user's default browser. */
   openUrl(url: string): Promise<void>;
@@ -207,7 +207,7 @@ function mockIpc(): Ipc {
         kind: input.kind,
         name:
           input.name ||
-          (input.path ? input.path.split("/").filter(Boolean).pop()! : `Port ${input.port}`),
+          (input.path ? input.path.split(/[\\/]/).filter(Boolean).pop()! : `Port ${input.port}`),
         path: input.path ?? null,
         port: input.port ?? null,
         url: null,

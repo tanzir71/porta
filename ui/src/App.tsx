@@ -6,6 +6,7 @@ import { AddShareSheet } from "./components/AddShareSheet";
 import { SettingsSheet } from "./components/SettingsSheet";
 import { EmptyState } from "./components/EmptyState";
 import { Logo, PlusIcon, GearIcon } from "./components/Icons";
+import { appShortcutLabel, isWindows } from "./lib/platform";
 
 type Sheet =
   | { kind: "none" }
@@ -81,7 +82,7 @@ export default function App() {
     };
   }, []);
 
-  // ---- keyboard: ⌘O picks a folder, Esc closes sheets ----
+  // ---- keyboard: the platform's primary modifier + O picks a folder; Esc closes sheets ----
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "o") { e.preventDefault(); pickFolder(); }
@@ -147,7 +148,13 @@ export default function App() {
     dragDepth.current = 0;
     // Browsers can't give absolute paths; the mock fakes one for demo purposes.
     const item = e.dataTransfer.items[0];
-    if (item) setSheet({ kind: "create", path: `/Users/you/Dropped/${e.dataTransfer.files[0]?.name ?? "folder"}` });
+    if (item) {
+      const name = e.dataTransfer.files[0]?.name ?? "folder";
+      setSheet({
+        kind: "create",
+        path: isWindows ? `C:\\Users\\you\\Dropped\\${name}` : `/Users/you/Dropped/${name}`,
+      });
+    }
   };
 
   return (
@@ -155,7 +162,7 @@ export default function App() {
       <header className="titlebar">
         <div className="brand"><Logo /> Porta</div>
         <div className="actions">
-          <button className="icon-btn" title="Share a folder (⌘O)" onClick={pickFolder}><PlusIcon /></button>
+          <button className="icon-btn" title={`Share a folder (${appShortcutLabel})`} onClick={pickFolder}><PlusIcon /></button>
           <button className="icon-btn" title="Settings" onClick={() => setSheet({ kind: "settings" })}><GearIcon /></button>
         </div>
       </header>

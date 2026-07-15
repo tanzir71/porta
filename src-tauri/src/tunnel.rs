@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, HashSet},
-    io,
     net::{Ipv4Addr, SocketAddr},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -8,6 +7,9 @@ use std::{
     },
     time::Duration,
 };
+
+#[cfg(unix)]
+use std::io;
 
 use regex::Regex;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -40,8 +42,16 @@ const CLOUDFLARE_ERROR: &str =
 const MISSING_SHARE: &str = "That share no longer exists. Return to the main window and try again.";
 const MISSING_PORT: &str =
     "This port share has no port. Edit the share and enter one from 1 to 65535.";
+
+#[cfg(target_os = "windows")]
+const STOP_ERROR: &str =
+    "Porta couldn't stop this share cleanly. Quit Porta, then check Task Manager for cloudflared.";
+#[cfg(target_os = "macos")]
 const STOP_ERROR: &str =
     "Porta couldn't stop this share cleanly. Quit Porta, then check Activity Monitor for cloudflared.";
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+const STOP_ERROR: &str =
+    "Porta couldn't stop this share cleanly. Quit Porta, then check your system's process manager for cloudflared.";
 const UNSTABLE_TUNNEL_ERROR: &str =
     "The tunnel keeps dropping. Porta will retry when you toggle it back on.";
 const FOLDER_MISSING_ERROR: &str = "This folder was moved or deleted. Pick it again to reshare.";
@@ -509,13 +519,30 @@ async fn shutdown_session(session: TunnelSession) -> Result<(), String> {
 }
 
 async fn terminate_child(child: CommandChild) -> bool {
-    if send_signal(child.pid(), libc::SIGTERM).is_err() {
-        return child.kill().is_ok();
+    #[cfg(unix)]
+    {
+        if send_signal(child.pid(), libc::SIGTERM).is_err() {
+            return child.kill().is_ok();
+        }
+
+        if wait_for_process_exit(child.pid(), GRACEFUL_STOP_TIMEOUT).await {
+            true
+        } else {
+            child.kill().is_ok()
+        }
     }
 
-    if wait_for_process_exit(child.pid(), GRACEFUL_STOP_TIMEOUT).await {
-        true
-    } else {
+    #[cfg(windows)]
+    {
+        let pid = child.pid();
+        if child.kill().is_err() {
+            return false;
+        }
+        wait_for_process_exit(pid, GRACEFUL_STOP_TIMEOUT).await
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
         child.kill().is_ok()
     }
 }
@@ -528,6 +555,7 @@ async fn wait_for_process_exit(pid: u32, timeout: Duration) -> bool {
     !process_is_running(pid)
 }
 
+#[cfg(unix)]
 fn terminate_sessions_blocking(sessions: Vec<TunnelSession>) {
     for session in &sessions {
         if let Some(child) = &session.child {
@@ -554,6 +582,32 @@ fn terminate_sessions_blocking(sessions: Vec<TunnelSession>) {
     }
 }
 
+#[cfg(windows)]
+fn terminate_sessions_blocking(sessions: Vec<TunnelSession>) {
+    let mut pids = Vec::new();
+    for session in sessions {
+        if let Some(child) = session.child {
+            pids.push(child.pid());
+            let _ = child.kill();
+        }
+    }
+
+    let deadline = std::time::Instant::now() + GRACEFUL_STOP_TIMEOUT;
+    while pids.iter().any(|pid| process_is_running(*pid)) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn terminate_sessions_blocking(sessions: Vec<TunnelSession>) {
+    for session in sessions {
+        if let Some(child) = session.child {
+            let _ = child.kill();
+        }
+    }
+}
+
+#[cfg(unix)]
 fn send_signal(pid: u32, signal: libc::c_int) -> io::Result<()> {
     // SAFETY: kill only receives a process identifier and a valid POSIX signal number.
     if unsafe { libc::kill(pid as libc::pid_t, signal) } == 0 {
@@ -568,6 +622,7 @@ fn send_signal(pid: u32, signal: libc::c_int) -> io::Result<()> {
     }
 }
 
+#[cfg(unix)]
 fn process_is_running(pid: u32) -> bool {
     // SAFETY: signal 0 does not alter the process; it only checks whether the PID exists.
     if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
@@ -575,6 +630,31 @@ fn process_is_running(pid: u32) -> bool {
     }
 
     io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(windows)]
+fn process_is_running(pid: u32) -> bool {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, STILL_ACTIVE},
+        System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+    };
+
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return false;
+    }
+
+    let mut exit_code = 0;
+    let queried = unsafe { GetExitCodeProcess(process, &mut exit_code) } != 0;
+    unsafe {
+        CloseHandle(process);
+    }
+    queried && exit_code == STILL_ACTIVE as u32
+}
+
+#[cfg(not(any(unix, windows)))]
+fn process_is_running(_pid: u32) -> bool {
+    false
 }
 
 async fn wait_for_tunnel_url(
@@ -704,7 +784,10 @@ fn url_to_copy(share: &Share, copy_url_on_start: bool) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use std::{process::Command, sync::mpsc, time::Duration};
+    use std::{sync::mpsc, time::Duration};
+
+    #[cfg(unix)]
+    use std::process::Command;
 
     use tauri::{Listener, Manager};
     use tauri_plugin_shell::{process::CommandEvent, ShellExt};
@@ -712,17 +795,40 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::{
-        cloudflared_args, first_visitor_notification_title, retry_delay, send_signal,
-        start_local_origin, stats_reporter, supervise_tunnel, transition_share, url_to_copy,
-        wait_for_process_end, wait_for_process_exit, wait_for_tunnel_url, RetryState,
-        CLOUDFLARE_ERROR, FIRST_VISITOR_BODY, FOLDER_MISSING_ERROR, UNSTABLE_TUNNEL_ERROR,
-        URL_TIMEOUT,
+        cloudflared_args, first_visitor_notification_title, retry_delay, start_local_origin,
+        stats_reporter, supervise_tunnel, transition_share, url_to_copy, wait_for_process_end,
+        wait_for_tunnel_url, RetryState, CLOUDFLARE_ERROR, FIRST_VISITOR_BODY,
+        FOLDER_MISSING_ERROR, UNSTABLE_TUNNEL_ERROR, URL_TIMEOUT,
     };
+    #[cfg(unix)]
+    use super::{send_signal, wait_for_process_exit};
     use crate::{
         server::{FileServer, FileServerConfig},
         shares::ShareStatus,
         store::Store,
     };
+
+    macro_rules! long_running_command {
+        ($app:expr) => {{
+            #[cfg(unix)]
+            {
+                $app.shell().command("sleep").arg("30")
+            }
+            #[cfg(windows)]
+            {
+                $app.shell().command("powershell.exe").args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "Start-Sleep -Seconds 30",
+                ])
+            }
+            #[cfg(not(any(unix, windows)))]
+            {
+                $app.shell().command("sleep").arg("30")
+            }
+        }};
+    }
 
     #[tokio::test]
     async fn uses_exact_args_and_discovers_a_split_stderr_url() {
@@ -994,10 +1100,7 @@ mod tests {
             .manage(super::TunnelManager::default())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("mock app should build");
-        let (_child_receiver, child) = app
-            .shell()
-            .command("sleep")
-            .arg("30")
+        let (_child_receiver, child) = long_running_command!(app)
             .spawn()
             .expect("managed child should start");
         let pid = child.pid();
@@ -1082,10 +1185,7 @@ mod tests {
             .manage(super::TunnelManager::default())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("mock app should build");
-        let (_child_receiver, child) = app
-            .shell()
-            .command("sleep")
-            .arg("30")
+        let (_child_receiver, child) = long_running_command!(app)
             .spawn()
             .expect("managed child should start");
         let pid = child.pid();
@@ -1146,6 +1246,7 @@ mod tests {
             .is_empty());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn sigterm_stops_a_child_within_the_grace_period() {
         let mut child = Command::new("sleep")
@@ -1178,10 +1279,7 @@ mod tests {
             .plugin(tauri_plugin_shell::init())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("mock app should build");
-        let (_receiver, child) = app
-            .shell()
-            .command("sleep")
-            .arg("30")
+        let (_receiver, child) = long_running_command!(app)
             .spawn()
             .expect("managed child should start");
         let pid = child.pid();
@@ -1209,10 +1307,7 @@ mod tests {
         assert!(!super::process_is_running(pid));
         assert!(manager.state.lock().await.sessions.is_empty());
 
-        let (_quit_receiver, quit_child) = app
-            .shell()
-            .command("sleep")
-            .arg("30")
+        let (_quit_receiver, quit_child) = long_running_command!(app)
             .spawn()
             .expect("quit child should start");
         let quit_pid = quit_child.pid();
@@ -1242,10 +1337,7 @@ mod tests {
             .plugin(tauri_plugin_shell::init())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("mock app should build");
-        let (_receiver, child) = app
-            .shell()
-            .command("sleep")
-            .arg("30")
+        let (_receiver, child) = long_running_command!(app)
             .spawn()
             .expect("managed child should start");
         let pid = child.pid();

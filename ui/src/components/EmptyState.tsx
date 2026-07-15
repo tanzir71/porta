@@ -1,5 +1,6 @@
 import React from "react";
 import { Logo, PlusIcon } from "./Icons";
+import { isWindows } from "../lib/platform";
 
 export function EmptyState({ onPickFolder }: { onPickFolder: () => void }) {
   return (
@@ -13,7 +14,9 @@ export function EmptyState({ onPickFolder }: { onPickFolder: () => void }) {
       <button className="btn btn-primary" onClick={onPickFolder}>
         <PlusIcon /> Choose a folder…
       </button>
-      <div className="hint">or drag any folder into this window · <kbd>⌘</kbd><kbd>O</kbd></div>
+      <div className="hint">
+        or drag any folder into this window · <kbd>{isWindows ? "Ctrl" : "⌘"}</kbd><kbd>O</kbd>
+      </div>
     </div>
   );
 }

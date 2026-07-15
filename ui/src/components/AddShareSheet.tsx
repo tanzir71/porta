@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import type { CreateShareInput, Share, UpdateShareInput } from "../lib/ipc";
 import { FolderIcon } from "./Icons";
+import { folderBasename } from "../lib/platform";
 
 /**
  * One sheet, two modes:
@@ -19,7 +20,7 @@ export interface AddShareSheetProps {
 export function AddShareSheet(props: AddShareSheetProps) {
   const editing = props.mode === "edit" ? props.share! : null;
   const path = editing?.path ?? props.path ?? "";
-  const basename = path.split("/").filter(Boolean).pop() ?? "Untitled";
+  const basename = folderBasename(path);
 
   const [name, setName] = useState(editing?.name ?? basename);
   const [usePassword, setUsePassword] = useState(editing?.passwordProtected ?? false);

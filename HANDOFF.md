@@ -1,6 +1,6 @@
 # Porta — Codex Handoff & Build Loop
 
-**Porta** is a free, UI-first tunneling app for macOS. Users visually pick folders (or local ports) and get a public `https://` link instantly — like ngrok, but zero-config, zero-cost, and designed for non-terminal people.
+**Porta** is a free, UI-first tunneling app for macOS and Windows. Users visually pick folders (or local ports) and get a public `https://` link instantly — like ngrok, but zero-config, zero-cost, and designed for non-terminal people.
 
 This document is a **loopable work order**. Run it iteration after iteration until every checkbox in [§7 Milestones](#7-milestones--the-loop-state) is checked. §8 defines the loop protocol. The React UI is **already built and final** — your job is the Rust/Tauri backend and wiring.
 
@@ -11,10 +11,10 @@ This document is a **loopable work order**. Run it iteration after iteration unt
 1. **Free forever.** No accounts, no servers we run, no paid APIs. Tunnels ride Cloudflare Quick Tunnels (`cloudflared`), which need no account and have no bandwidth cap.
 2. **Grandma-simple.** Drag folder in → link on clipboard. Every error message must say what to do next, in plain words.
 3. **The UI is the spec.** Everything visible in `ui/src` must work exactly as the components imply. Never simplify a feature because the backend is hard.
-4. **Quiet resident app.** Menu-bar first: closing the window hides it; the app keeps serving. Quit only from the tray menu.
+4. **Quiet resident app.** System-tray first: closing the window hides it; the app keeps serving. Quit only from the tray menu.
 5. **Honest security.** Quick Tunnel URLs are unguessable but public. Password protection is our auth layer (basic-auth at the local server). Never claim end-to-end encryption.
 
-**Non-goals (do not build):** custom domains, TCP tunnels, accounts/sync, Windows/Linux (structure code so ports are feasible, nothing more), analytics/telemetry of any kind.
+**Non-goals (do not build):** custom domains, TCP tunnels, accounts/sync, Linux, Windows ARM64/32-bit, analytics/telemetry of any kind.
 
 ---
 
@@ -31,7 +31,7 @@ This document is a **loopable work order**. Run it iteration after iteration unt
 | **Pinggy / localhost.run** | Freemium | No (SSH one-liners) | No | Session limits on free tier; random URLs |
 | **bore / frp / chisel** | Free, OSS | No | No | Need your own VPS; deeply technical |
 
-**The gap Porta fills:** every free option is CLI-only; every GUI option costs money or needs an account. Nobody makes *folder sharing* (not port forwarding) the primary object. Porta = LocalCan's polish + cloudflared's free transport + Finder-native folder mental model. Password protection and visitor stats — paid features elsewhere — are free here because they live in our local server, not the tunnel provider.
+**The gap Porta fills:** every free option is CLI-only; every GUI option costs money or needs an account. Nobody makes *folder sharing* (not port forwarding) the primary object. Porta = LocalCan's polish + cloudflared's free transport + a native desktop folder mental model. Password protection and visitor stats — paid features elsewhere — are free here because they live in our local server, not the tunnel provider.
 
 *Sources: [ngrok free plan limits](https://ngrok.com/docs/pricing-limits/free-plan-limits), [ngrok pricing](https://ngrok.com/pricing), [Cloudflare Quick Tunnels docs](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/), [LocalCan](https://www.localcan.com/), [Tailscale Funnel](https://tailscale.com/docs/features/tailscale-funnel), [awesome-tunneling](https://github.com/anderspitman/awesome-tunneling), [Pinggy: ngrok alternatives](https://pinggy.io/blog/best_ngrok_alternatives/).*
 
@@ -47,12 +47,12 @@ This document is a **loopable work order**. Run it iteration after iteration unt
 │    ShareManager  — persistence (JSON in app-data), lifecycle state machine│
 │    FileServer    — axum + tower: ServeDir per folder share on 127.0.0.1:0 │
 │                    • listing.html rendering (server-templates/)           │
-│                    • basic-auth middleware (password from macOS Keychain) │
+│                    • basic-auth middleware (password from OS credentials) │
 │                    • multipart upload handler (if allowUploads)           │
 │                    • stats middleware (visitors/requests/bytes)           │
 │    TunnelManager — spawns bundled `cloudflared tunnel --url http://…`     │
 │                    parses public URL from stderr, supervises, restarts    │
-│    Tray          — menu-bar icon, per-share quick toggles, Quit           │
+│    Tray          — menu-bar/notification icon, quick toggles, Quit        │
 │    Autostart     — tauri-plugin-autostart (launch at login)               │
 └───────────────────────────────────────────────────────────────────────────┘
          folder share:  Browser → Cloudflare edge → cloudflared → axum → disk
@@ -60,11 +60,11 @@ This document is a **loopable work order**. Run it iteration after iteration unt
 ```
 
 **Key decisions (do not relitigate):**
-- **Tauri v2**, stable channel. Bundle `cloudflared` (universal macOS binary) as a Tauri *sidecar* — never require the user to install anything.
+- **Tauri v2**, stable channel. Bundle the target-specific `cloudflared` binary as a Tauri *sidecar* — never require the user to install anything.
 - One axum server per active folder share, bound to `127.0.0.1:0` (OS-assigned port). Port shares skip axum; cloudflared points at the user's port directly.
 - URL parsing: cloudflared prints `https://<random>.trycloudflare.com` on stderr within ~5 s. Regex `https://[a-z0-9-]+\.trycloudflare\.com`. Timeout 30 s → status `error` with message "Couldn't reach Cloudflare — check your internet connection and try again."
 - Supervision: if cloudflared exits while a share is `live`, auto-restart with backoff 1 s → 2 s → 4 s… (max 60 s), keep status `live` unless 3 consecutive failures → `error`: "The tunnel keeps dropping. Porta will retry when you toggle it back on."
-- Passwords: store in macOS Keychain (`security` via `keyring` crate), never in the JSON store. JSON keeps only `passwordProtected: bool`.
+- Passwords: store in macOS Keychain or Windows Credential Manager via the `keyring` crate, never in the JSON store. JSON keeps only `passwordProtected: bool`.
 - Stats: middleware counts requests/bytes; "visitors" = unique `Cf-Connecting-Ip` header values since start (HashSet, reset on start).
 - Quick Tunnels don't support SSE and cap at 200 in-flight requests — irrelevant for file sharing, but document in README.
 
@@ -84,8 +84,8 @@ tunnel/
 ├── server-templates/
 │   └── listing.html         ← visitor-facing directory page (embed via include_str!)
 └── src-tauri/               ← YOU CREATE THIS (tauri init, then implement)
-    ├── Cargo.toml  tauri.conf.json  capabilities/
-    ├── binaries/cloudflared-aarch64-apple-darwin (+x86_64)  ← sidecar
+    ├── Cargo.toml  tauri.conf.json  tauri.{macos,windows}.conf.json  capabilities/
+    ├── binaries/cloudflared-{aarch64-apple-darwin,x86_64-pc-windows-msvc.exe}  ← sidecars
     ├── icons/
     └── src/{main,shares,server,tunnel,tray,settings,stats}.rs
 ```
@@ -116,7 +116,7 @@ tunnel/
 **Settings semantics:**
 - `launchAtLogin` → tauri-plugin-autostart register/unregister.
 - `autoStartShares` → on app launch, start every share with `autoStart:true`.
-- `showDockIcon` → `app.set_activation_policy(Regular|Accessory)` live-switchable.
+- `showDockIcon` → macOS activation policy or Windows `set_skip_taskbar`; persisted name stays unchanged for compatibility.
 - `copyUrlOnStart` → when a share transitions to `live`, write URL to clipboard (tauri-plugin-clipboard-manager).
 - `notifyOnFirstVisitor` → native notification on a share's first unique visitor (tauri-plugin-notification): title = share name, body = "Someone just opened your link."
 
@@ -124,9 +124,9 @@ tunnel/
 
 ## 6. Hard rules (read every loop)
 
-1. **Never modify** `ui/src/components/*`, `ui/src/App.tsx`, or `ui/src/styles.css` — the design is final. Allowed in `ui/`: bugfix-level changes to `ipc.ts` *only if* both sides are updated in the same commit and the change is additive.
+1. Keep the established UI design intact. Platform-specific copy, path handling, native title-bar spacing, and additive IPC-compatible fixes are allowed when both operating systems remain visually consistent.
 2. Every command returns `Result<T, String>`; error strings are user-facing — plain English, actionable, no Rust debug noise.
-3. Window close = hide (keep serving). Real quit only from tray. Quitting stops all tunnels cleanly (SIGTERM to cloudflared, then wait ≤3 s).
+3. Window close = hide (keep serving). Real quit only from tray. Quitting stops all tunnels cleanly within 3 seconds using the platform's supported process-termination path.
 4. Serve **only** within the shared folder — canonicalize every request path and reject traversal (`..`, symlinks escaping the root) with 404.
 5. Uploads: only when `allowUploads`; reject files > 2 GB; never overwrite — collide as `name (2).ext`.
 6. No telemetry, no network calls except cloudflared itself.
@@ -177,14 +177,14 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 - [~] Verify: hit share from two IPs (phone on cellular) → visitors=2 in UI
 
 ### M5 — Resident app: tray, login, drag-drop
-- [x] Tray icon (template image, correct dark-mode) with menu: per-share rows "● Client Mockups — Copy link / Turn off", "Share a folder…", "Open Porta", separator, "Quit Porta"
+- [x] Tray icon (macOS template image; colored Windows notification-area image) with menu: per-share rows "● Client Mockups — Copy link / Turn off", "Share a folder…", "Open Porta", separator, "Quit Porta"
 - [x] Tray icon state: idle vs ≥1 live share (badge/filled variant)
-- [x] Window close hides; app keeps serving; dock icon policy follows `showDockIcon` live
-- [x] `launchAtLogin` via tauri-plugin-autostart verified in System Settings › Login Items
+- [x] Window close hides; app keeps serving; Dock/taskbar icon policy follows `showDockIcon` live
+- [x] `launchAtLogin` via tauri-plugin-autostart; macOS path verified in System Settings › Login Items
 - [x] `autoStartShares` on launch (only when master switch on)
-- [x] Native drag-drop wired to the three `porta:*` CustomEvents; dropping a real folder from Finder opens the create sheet with the correct absolute path
+- [x] Native drag-drop wired to the three `porta:*` CustomEvents; dropping a real folder from Finder/File Explorer opens the create sheet with the correct absolute path
 - [x] Single-instance plugin: second launch focuses existing window
-- [~] Verify: log out/in → Porta running in menu bar, auto-start shares live, links work
+- [~] Verify: log out/in → Porta running in the menu bar/notification area, auto-start shares live, links work
 
 ### M6 — Polish & hardening
 - [x] All error strings audited against §6.2 (no `Error:`, no paths-only, always an action)
@@ -198,6 +198,12 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 - [x] Version 1.0.0 tagged; CHANGELOG.md written
 - [x] .dmg < 25 MB (cloudflared included)
 - [x] Zero clippy warnings, zero TS errors (`npm run build`), zero orphan processes after 10 start/stop cycles (scripted)
+
+### M8 — Windows 1.1
+- [ ] Windows 10/11 x64 backend, paths, credential storage, taskbar, tray, autostart, and process cleanup pass on `windows-latest`
+- [ ] Per-user unsigned NSIS installer contains the checksum-verified `cloudflared` sidecar and survives install/launch/uninstall smoke testing
+- [ ] Version 1.1.0 release contains Apple-silicon DMG and Windows x64 setup EXE with matching SHA-256 attachments
+- [ ] README, release notes, and GitHub Pages present platform-specific downloads and Gatekeeper/SmartScreen instructions
 
 ---
 
@@ -229,8 +235,8 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 - Rename share while live → card updates, URL unchanged
 - Two shares of the same folder → both work independently
 - Delete the folder on disk while shared → status `error`: "This folder was moved or deleted. Pick it again to reshare."
-- Quit from tray → `pgrep cloudflared` empty
-- Fresh macOS user account → app launches, no missing-permission crashes
+- Quit from tray → no `cloudflared` process remains in Activity Monitor or Task Manager
+- Fresh macOS or Windows user account → app launches, no missing-permission crashes
 
 ## 10. Blockers (append-only)
 
