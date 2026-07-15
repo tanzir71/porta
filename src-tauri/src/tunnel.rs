@@ -12,6 +12,7 @@ use std::{
 use regex::Regex;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tauri_plugin_clipboard_manager::ClipboardExt;
+use tauri_plugin_notification::{NotificationExt, PermissionState};
 use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent},
     ShellExt,
@@ -43,6 +44,7 @@ const STOP_ERROR: &str =
     "Porta couldn't stop this share cleanly. Quit Porta, then check Activity Monitor for cloudflared.";
 const UNSTABLE_TUNNEL_ERROR: &str =
     "The tunnel keeps dropping. Porta will retry when you toggle it back on.";
+const FIRST_VISITOR_BODY: &str = "Someone just opened your link.";
 const WINDOW_REFRESH_ERROR: &str = "Porta saved the change but couldn't refresh its windows. Close and reopen the window to see it.";
 
 static TUNNEL_URL: LazyLock<Regex> = LazyLock::new(|| {
@@ -246,27 +248,78 @@ async fn start_local_origin<R: Runtime>(
 }
 
 fn stats_reporter<R: Runtime>(app: &AppHandle<R>, share_id: String) -> Arc<StatsReporter> {
-    let app = app.clone();
-    StatsReporter::new(move |stats| {
-        let store = app.state::<Store>();
-        let saved = store.update(|shares, _| {
-            let share = shares
-                .iter_mut()
+    let stats_app = app.clone();
+    let stats_share_id = share_id.clone();
+    let notification_app = app.clone();
+    StatsReporter::with_first_visitor(
+        move |stats| {
+            let store = stats_app.state::<Store>();
+            let saved = store.update(|shares, _| {
+                let share = shares
+                    .iter_mut()
+                    .find(|share| share.id == stats_share_id)
+                    .ok_or_else(|| MISSING_SHARE.to_owned())?;
+                share.stats = stats;
+                Ok(())
+            });
+            if saved.is_ok() {
+                let _ = stats_app.emit(
+                    "app_event",
+                    AppEvent::StatsUpdated {
+                        id: stats_share_id.clone(),
+                        stats,
+                    },
+                );
+            }
+        },
+        move || {
+            show_first_visitor_notification(&notification_app, &share_id);
+        },
+    )
+}
+
+fn show_first_visitor_notification<R: Runtime>(app: &AppHandle<R>, share_id: &str) {
+    let store = app.state::<Store>();
+    let title = store
+        .read(|shares, settings| {
+            first_visitor_notification_title(shares, settings.notify_on_first_visitor, share_id)
+        })
+        .ok()
+        .flatten();
+    let Some(title) = title else {
+        return;
+    };
+
+    let notification = app.notification();
+    let granted = matches!(
+        notification.permission_state(),
+        Ok(PermissionState::Granted)
+    ) || matches!(
+        notification.request_permission(),
+        Ok(PermissionState::Granted)
+    );
+    if granted {
+        let _ = notification
+            .builder()
+            .title(title)
+            .body(FIRST_VISITOR_BODY)
+            .show();
+    }
+}
+
+fn first_visitor_notification_title(
+    shares: &[Share],
+    enabled: bool,
+    share_id: &str,
+) -> Option<String> {
+    enabled
+        .then(|| {
+            shares
+                .iter()
                 .find(|share| share.id == share_id)
-                .ok_or_else(|| MISSING_SHARE.to_owned())?;
-            share.stats = stats;
-            Ok(())
-        });
-        if saved.is_ok() {
-            let _ = app.emit(
-                "app_event",
-                AppEvent::StatsUpdated {
-                    id: share_id.clone(),
-                    stats,
-                },
-            );
-        }
-    })
+                .map(|share| share.name.clone())
+        })
+        .flatten()
 }
 
 fn spawn_cloudflared<R: Runtime>(
@@ -590,10 +643,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        cloudflared_args, retry_delay, send_signal, start_local_origin, stats_reporter,
-        supervise_tunnel, transition_share, url_to_copy, wait_for_process_end,
-        wait_for_process_exit, wait_for_tunnel_url, RetryState, CLOUDFLARE_ERROR,
-        UNSTABLE_TUNNEL_ERROR, URL_TIMEOUT,
+        cloudflared_args, first_visitor_notification_title, retry_delay, send_signal,
+        start_local_origin, stats_reporter, supervise_tunnel, transition_share, url_to_copy,
+        wait_for_process_end, wait_for_process_exit, wait_for_tunnel_url, RetryState,
+        CLOUDFLARE_ERROR, FIRST_VISITOR_BODY, UNSTABLE_TUNNEL_ERROR, URL_TIMEOUT,
     };
     use crate::{
         server::{FileServer, FileServerConfig},
@@ -739,6 +792,29 @@ mod tests {
         assert_eq!(url_to_copy(&share, true), None);
     }
 
+    #[test]
+    fn first_visitor_notification_uses_the_share_name_and_exact_body() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/ipc_contract.json"))
+                .expect("fixture should contain JSON");
+        let share: crate::shares::Share = serde_json::from_value(fixture["share"].clone())
+            .expect("fixture share should deserialize");
+
+        assert_eq!(
+            first_visitor_notification_title(std::slice::from_ref(&share), true, &share.id),
+            Some(share.name.clone())
+        );
+        assert_eq!(
+            first_visitor_notification_title(std::slice::from_ref(&share), false, &share.id),
+            None
+        );
+        assert_eq!(
+            first_visitor_notification_title(std::slice::from_ref(&share), true, "missing"),
+            None
+        );
+        assert_eq!(FIRST_VISITOR_BODY, "Someone just opened your link.");
+    }
+
     #[tokio::test]
     async fn coalesces_stats_ticks_and_persists_the_latest_snapshot() {
         let data_dir = tempdir().expect("temporary store should be created");
@@ -750,8 +826,9 @@ mod tests {
             .expect("fixture share should deserialize");
         let id = share.id.clone();
         store
-            .update(|shares, _| {
+            .update(|shares, settings| {
                 shares.push(share);
+                settings.notify_on_first_visitor = false;
                 Ok(())
             })
             .expect("fixture share should persist");

@@ -19,6 +19,7 @@ pub struct ShareStats {
 }
 
 type StatsSink = dyn Fn(ShareStats) + Send + Sync + 'static;
+type FirstVisitorSink = dyn Fn() + Send + Sync + 'static;
 
 /// Session-scoped counters with a coalesced, at-most-once-per-second sink.
 pub struct StatsReporter {
@@ -28,11 +29,20 @@ pub struct StatsReporter {
     active: AtomicBool,
     dirty: AtomicBool,
     tick_scheduled: AtomicBool,
+    first_visitor_seen: AtomicBool,
     sink: Box<StatsSink>,
+    first_visitor_sink: Box<FirstVisitorSink>,
 }
 
 impl StatsReporter {
     pub fn new(sink: impl Fn(ShareStats) + Send + Sync + 'static) -> Arc<Self> {
+        Self::with_first_visitor(sink, || {})
+    }
+
+    pub fn with_first_visitor(
+        sink: impl Fn(ShareStats) + Send + Sync + 'static,
+        first_visitor_sink: impl Fn() + Send + Sync + 'static,
+    ) -> Arc<Self> {
         Arc::new(Self {
             visitors: Mutex::new(HashSet::new()),
             requests: AtomicU64::new(0),
@@ -40,7 +50,9 @@ impl StatsReporter {
             active: AtomicBool::new(true),
             dirty: AtomicBool::new(false),
             tick_scheduled: AtomicBool::new(false),
+            first_visitor_seen: AtomicBool::new(false),
             sink: Box::new(sink),
+            first_visitor_sink: Box::new(first_visitor_sink),
         })
     }
 
@@ -49,11 +61,21 @@ impl StatsReporter {
             return;
         }
         saturating_add(&self.requests, 1);
-        if let Some(visitor) = visitor.and_then(|value| value.parse::<IpAddr>().ok()) {
-            self.visitors
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(visitor);
+        let is_new_visitor = visitor
+            .and_then(|value| value.parse::<IpAddr>().ok())
+            .is_some_and(|visitor| {
+                self.visitors
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(visitor)
+            });
+        if is_new_visitor
+            && self
+                .first_visitor_seen
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        {
+            (self.first_visitor_sink)();
         }
         self.mark_dirty();
     }

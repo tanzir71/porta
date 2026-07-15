@@ -6,6 +6,9 @@
   "permissions": [
     "core:default",
     "clipboard-manager:allow-write-text",
+    "notification:allow-is-permission-granted",
+    "notification:allow-request-permission",
+    "notification:allow-show",
     {
       "identifier": "shell:allow-spawn",
       "allow": [

@@ -173,7 +173,7 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 
 ### M4 — Stats + notifications
 - [x] Stats middleware: requests, bytes, unique visitors via `Cf-Connecting-Ip`; `stats_updated` event ≤1/s per share
-- [ ] `notifyOnFirstVisitor` fires native notification once per session per share
+- [x] `notifyOnFirstVisitor` fires native notification once per session per share
 - [ ] Verify: hit share from two IPs (phone on cellular) → visitors=2 in UI
 
 ### M5 — Resident app: tray, login, drag-drop

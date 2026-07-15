@@ -747,7 +747,14 @@ async fn resolve_request_path(root: &Path, request_path: &str) -> Option<PathBuf
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+    use std::{
+        collections::HashMap,
+        net::SocketAddr,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+    };
 
     use base64::Engine as _;
     use tempfile::tempdir;
@@ -899,7 +906,14 @@ mod tests {
         tokio::fs::write(root.path().join("payload.bin"), b"abcdefghij")
             .await
             .expect("payload should be written");
-        let reporter = StatsReporter::new(|_| {});
+        let first_visitor_calls = Arc::new(AtomicUsize::new(0));
+        let first_visitor_counter = Arc::clone(&first_visitor_calls);
+        let reporter = StatsReporter::with_first_visitor(
+            |_| {},
+            move || {
+                first_visitor_counter.fetch_add(1, Ordering::Relaxed);
+            },
+        );
         let server = FileServer::start(
             FileServerConfig::new(root.path(), "Stats").stats(Arc::clone(&reporter)),
         )
@@ -936,6 +950,7 @@ mod tests {
                 bytes_served: 24,
             }
         );
+        assert_eq!(first_visitor_calls.load(Ordering::Relaxed), 1);
 
         server.stop().await.expect("stats server should stop");
     }
