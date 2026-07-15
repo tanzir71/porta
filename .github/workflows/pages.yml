@@ -1,0 +1,55 @@
+name: Deploy GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Configure GitHub Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Prepare static site
+        env:
+          SITE_URL: ${{ steps.pages.outputs.base_url }}
+        run: |
+          SITE_URL="${SITE_URL%/}"
+          mkdir _site
+          cp -R site/. _site/
+          find _site -type f \( -name '*.html' -o -name '*.js' -o -name '*.xml' -o -name '*.txt' \) \
+            -exec sed -i "s|__GITHUB_REPOSITORY__|${GITHUB_REPOSITORY}|g; s|__SITE_URL__|${SITE_URL}|g" {} +
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

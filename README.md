@@ -5,8 +5,7 @@ a public HTTPS link. Pick or drag in a folder, and Porta serves it through a
 Cloudflare Quick Tunnel without an account, a terminal command, or a hosted
 Porta service.
 
-> **Screenshot placeholder:** Porta's main window and menu-bar controls will be
-> shown here before the public release.
+![Porta — Share a folder. Get a link.](site/assets/og.png)
 
 ## What it does
 
@@ -40,9 +39,26 @@ Quick Tunnels remains subject to the
 
 ## Install
 
-Porta currently targets macOS. Open the DMG, drag Porta to Applications, and
-launch it. Development builds are ad-hoc signed rather than notarized, so macOS
-may require the first launch through Finder's **Open** context-menu action.
+Porta 1.0 currently targets Apple silicon Macs. Download
+[`Porta_1.0.0_aarch64.dmg`](../../releases/latest/download/Porta_1.0.0_aarch64.dmg),
+open it, and drag Porta to Applications.
+
+The official 1.0 release is ad-hoc signed and has not been notarized by Apple,
+so macOS will likely block the first launch:
+
+1. Try opening Porta once, then dismiss the warning.
+2. Open **System Settings → Privacy & Security** and scroll to **Security**.
+3. Click **Open Anyway**, enter your login password, then confirm **Open**.
+
+Apple makes **Open Anyway** available for about an hour after the blocked
+launch. Only override Gatekeeper when the DMG came from Porta's
+[official GitHub Release](../../releases/latest) and this SHA-256 matches:
+
+```text
+d76ba419489c0b3b434b4a28eb6171cfcbb4ad1394f8d98bcb779eb2fcac2257
+```
+
+See [Apple's official instructions](https://support.apple.com/guide/mac-help/open-an-app-by-overriding-security-settings-mh40617/mac).
 
 Then drag a folder into Porta or choose **Share a folder**, review the share
 options, and use the copied `trycloudflare.com` link. Closing the window hides
