@@ -29,9 +29,12 @@
     }
   },
   "bundle": {
-    "active": false,
-    "targets": "all",
+    "active": true,
+    "targets": "dmg",
     "icon": ["icons/icon.icns", "icons/icon.png"],
-    "externalBin": ["binaries/cloudflared"]
+    "externalBin": ["binaries/cloudflared"],
+    "macOS": {
+      "signingIdentity": "-"
+    }
   }
 }
