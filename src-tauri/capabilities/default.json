@@ -3,5 +3,24 @@
   "identifier": "default",
   "description": "Default permissions for Porta's main window",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "binaries/cloudflared",
+          "sidecar": true,
+          "args": [
+            "tunnel",
+            "--url",
+            {
+              "validator": "^http://127\\.0\\.0\\.1:[0-9]{1,5}$"
+            },
+            "--no-autoupdate"
+          ]
+        }
+      ]
+    }
+  ]
 }

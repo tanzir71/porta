@@ -143,7 +143,7 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 - [x] `src-tauri` initialized (Tauri v2, `identifier: com.porta.app`), window: 480×640 min 420×520, `titleBarStyle: Overlay`, `hiddenTitle: true`, resizable
 - [x] `npm install && npm run build` succeeds in `ui/`
 - [x] `cargo tauri dev` launches showing the React UI (mock data OK at this stage)
-- [ ] cloudflared universal binaries fetched into `src-tauri/binaries/` + configured as sidecar with shell-scope permission
+- [x] cloudflared universal binaries fetched into `src-tauri/binaries/` + configured as sidecar with shell-scope permission
 - [ ] Verify: `cargo tauri dev` renders EmptyState or mock cards with no console errors
 
 ### M1 — Share store + CRUD (no tunnel yet)
