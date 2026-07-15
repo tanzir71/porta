@@ -1155,4 +1155,63 @@ mod tests {
             .await
             .expect("disabled upload server should stop");
     }
+
+    #[tokio::test]
+    async fn m2_temp_share_integration_covers_listing_download_traversal_and_auth() {
+        let root = tempdir().expect("M2 integration folder should be created");
+        let expected: Vec<u8> = (0_u8..=255).cycle().take(4096).collect();
+        tokio::fs::write(root.path().join("payload.bin"), &expected)
+            .await
+            .expect("integration payload should be written");
+        let server = FileServer::start(
+            FileServerConfig::new(root.path(), "M2 integration")
+                .password(Some("integration-secret".to_owned())),
+        )
+        .await
+        .expect("M2 integration server should start");
+        let correct = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode("porta:integration-secret")
+        );
+        let wrong = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode("porta:not-the-password")
+        );
+
+        let listing = request(server.address(), "/", &[("Authorization", &correct)]).await;
+        assert_eq!(listing.status, 200);
+        assert!(String::from_utf8(listing.body)
+            .expect("listing should be UTF-8 HTML")
+            .contains("payload.bin"));
+
+        let download = request(
+            server.address(),
+            "/payload.bin",
+            &[("Authorization", &correct)],
+        )
+        .await;
+        assert_eq!(download.status, 200);
+        assert_eq!(download.body, expected);
+
+        let traversal = request(
+            server.address(),
+            "/nested/../../etc/passwd",
+            &[("Authorization", &correct)],
+        )
+        .await;
+        assert_eq!(traversal.status, 404);
+
+        let rejected = request(
+            server.address(),
+            "/payload.bin",
+            &[("Authorization", &wrong)],
+        )
+        .await;
+        assert_eq!(rejected.status, 401);
+
+        server
+            .stop()
+            .await
+            .expect("M2 integration server should stop");
+    }
 }

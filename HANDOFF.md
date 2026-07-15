@@ -160,7 +160,7 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 - [x] Path traversal blocked (test with `curl --path-as-is /a/../../etc/passwd` → 404)
 - [x] basic-auth middleware when password set (realm "Porta"); password stored/read via Keychain
 - [x] uploads: multipart POST to current dir when `allowUploads`; collision-safe; 303 redirect back
-- [ ] Verify: integration test hits a temp dir share: listing renders, file downloads byte-identical, traversal 404s, wrong password 401s
+- [x] Verify: integration test hits a temp dir share: listing renders, file downloads byte-identical, traversal 404s, wrong password 401s
 
 ### M3 — Tunnel lifecycle
 - [ ] TunnelManager spawns sidecar `cloudflared tunnel --url http://127.0.0.1:{port} --no-autoupdate`, parses URL ≤30 s, transitions `starting→live` with URL via event
