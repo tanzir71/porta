@@ -113,7 +113,8 @@ impl FileServer {
                 listing_state,
                 serve_directory_listing,
             ))
-            .layer(middleware::from_fn_with_state(root, add_etag));
+            .layer(middleware::from_fn_with_state(root.clone(), add_etag))
+            .layer(middleware::from_fn_with_state(root, enforce_shared_root));
         let (shutdown, shutdown_signal) = oneshot::channel();
         let task = tokio::spawn(async move {
             axum::serve(listener, app)
@@ -160,6 +161,20 @@ impl Drop for FileServer {
             task.abort();
         }
     }
+}
+
+async fn enforce_shared_root(
+    State(root): State<PathBuf>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    if resolve_request_path(&root, request.uri().path())
+        .await
+        .is_none()
+    {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    next.run(request).await
 }
 
 async fn serve_directory_listing(
@@ -638,5 +653,64 @@ mod tests {
 
         site.stop().await.expect("site server should stop");
         files.stop().await.expect("file server should stop");
+    }
+
+    #[tokio::test]
+    async fn blocks_raw_encoded_and_symlink_path_escapes() {
+        let root = tempdir().expect("shared folder should be created");
+        let outside = tempdir().expect("outside folder should be created");
+        tokio::fs::create_dir(root.path().join("a"))
+            .await
+            .expect("nested folder should be created");
+        tokio::fs::write(root.path().join("safe.txt"), b"safe")
+            .await
+            .expect("safe file should be written");
+        let secret = outside.path().join("secret.txt");
+        tokio::fs::write(&secret, b"must not escape")
+            .await
+            .expect("outside file should be written");
+        std::os::unix::fs::symlink(&secret, root.path().join("escape.txt"))
+            .expect("escape symlink should be created");
+
+        let server = FileServer::start(FileServerConfig::new(root.path(), "Safe files"))
+            .await
+            .expect("safe server should start");
+        let safe = request(server.address(), "/safe.txt", &[]).await;
+        assert_eq!(safe.status, 200);
+        assert_eq!(safe.body, b"safe");
+
+        let raw = request(server.address(), "/a/../../etc/passwd", &[]).await;
+        assert_eq!(raw.status, 404);
+        let encoded = request(server.address(), "/a/%2e%2e/%2e%2e/etc/passwd", &[]).await;
+        assert_eq!(encoded.status, 404);
+        let symlink = request(server.address(), "/escape.txt", &[]).await;
+        assert_eq!(symlink.status, 404);
+        assert_ne!(symlink.body, b"must not escape");
+
+        let curl_url = format!("http://{}/a/../../etc/passwd", server.address());
+        let curl = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("curl")
+                .args([
+                    "--silent",
+                    "--output",
+                    "/dev/null",
+                    "--write-out",
+                    "%{http_code}",
+                    "--path-as-is",
+                    "--max-time",
+                    "5",
+                    "--noproxy",
+                    "*",
+                    &curl_url,
+                ])
+                .output()
+        })
+        .await
+        .expect("curl verification task should finish")
+        .expect("curl should be available on macOS");
+        assert!(curl.status.success());
+        assert_eq!(curl.stdout, b"404");
+
+        server.stop().await.expect("safe server should stop");
     }
 }
