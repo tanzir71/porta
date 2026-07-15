@@ -859,7 +859,11 @@ mod tests {
         let second = FileServer::start(FileServerConfig::new(second_root.path(), "Second"))
             .await
             .expect("second file server should start");
+        let same_folder = FileServer::start(FileServerConfig::new(first_root.path(), "Duplicate"))
+            .await
+            .expect("the same folder should support a second independent server");
         assert_ne!(first.address(), second.address());
+        assert_ne!(first.address(), same_folder.address());
 
         let full = request(first.address(), "/clip.mp4", &[]).await;
         assert_eq!(full.status, 200);
@@ -895,9 +899,100 @@ mod tests {
         let isolated = request(second.address(), "/clip.mp4", &[]).await;
         assert_eq!(isolated.status, 200);
         assert_eq!(isolated.body, b"second folder");
+        let duplicate = request(same_folder.address(), "/clip.mp4", &[]).await;
+        assert_eq!(duplicate.status, 200);
+        assert_eq!(duplicate.body, b"abcdefghij");
 
         first.stop().await.expect("first server should stop");
         second.stop().await.expect("second server should stop");
+        same_folder
+            .stop()
+            .await
+            .expect("duplicate server should stop");
+    }
+
+    #[tokio::test]
+    async fn qa_listing_handles_one_thousand_files_unicode_and_a_two_gib_range() {
+        let root = tempdir().expect("large temporary folder should be created");
+        for index in 0..1_000 {
+            std::fs::write(root.path().join(format!("file-{index:04}.txt")), b"")
+                .expect("listing fixture should be written");
+        }
+        let server = FileServer::start(FileServerConfig::new(root.path(), "Large listing"))
+            .await
+            .expect("large listing server should start");
+        let started = std::time::Instant::now();
+        let listing = request(server.address(), "/", &[]).await;
+        let elapsed = started.elapsed();
+        assert_eq!(listing.status, 200);
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "1,000-file listing rendered in {elapsed:?}"
+        );
+        let html = String::from_utf8(listing.body).expect("listing should be UTF-8");
+        assert_eq!(html.matches("<a class=\"row\"").count(), 1_000);
+        assert!(html.contains("q.addEventListener('input'"));
+        assert!(html.contains("indexOf(t) > -1"));
+        if let Ok(seconds) = std::env::var("PORTA_QA_HOLD_SECONDS") {
+            println!("PORTA_QA_LISTING_URL=http://{}/", server.address());
+            tokio::time::sleep(std::time::Duration::from_secs(
+                seconds.parse().expect("QA hold duration should be seconds"),
+            ))
+            .await;
+        }
+        server
+            .stop()
+            .await
+            .expect("large listing server should stop");
+
+        let unicode_root = root.path().join("資料 📁 with spaces");
+        std::fs::create_dir(&unicode_root).expect("Unicode folder should be created");
+        std::fs::write(unicode_root.join("報告 final 🚀.txt"), b"unicode")
+            .expect("Unicode fixture should be written");
+        let unicode = FileServer::start(FileServerConfig::new(&unicode_root, "資料 📁"))
+            .await
+            .expect("Unicode folder should be shareable");
+        let unicode_listing = request(unicode.address(), "/", &[]).await;
+        let unicode_html =
+            String::from_utf8(unicode_listing.body).expect("Unicode listing should be UTF-8");
+        assert!(unicode_html.contains("資料 📁"));
+        assert!(unicode_html.contains("報告 final 🚀.txt"));
+        let encoded = request(
+            unicode.address(),
+            "/%E5%A0%B1%E5%91%8A%20final%20%F0%9F%9A%80%2Etxt",
+            &[],
+        )
+        .await;
+        assert_eq!(encoded.status, 200);
+        assert_eq!(encoded.body, b"unicode");
+        unicode.stop().await.expect("Unicode server should stop");
+
+        let video_path = root.path().join("two-gib-video.mp4");
+        let video = std::fs::File::create(&video_path).expect("sparse video should be created");
+        video
+            .set_len(2 * 1024 * 1024 * 1024)
+            .expect("sparse video should be sized to 2 GiB");
+        drop(video);
+        let media = FileServer::start(FileServerConfig::new(root.path(), "Large media"))
+            .await
+            .expect("large media server should start");
+        let tail = request(
+            media.address(),
+            "/two-gib-video.mp4",
+            &[("Range", "bytes=2147483644-2147483647")],
+        )
+        .await;
+        assert_eq!(tail.status, 206);
+        assert_eq!(tail.body, [0_u8; 4]);
+        assert_eq!(
+            tail.headers.get("content-range").map(String::as_str),
+            Some("bytes 2147483644-2147483647/2147483648")
+        );
+        assert_eq!(
+            tail.headers.get("content-type").map(String::as_str),
+            Some("video/mp4")
+        );
+        media.stop().await.expect("large media server should stop");
     }
 
     #[tokio::test]
@@ -1027,7 +1122,7 @@ mod tests {
         let listing = request(server.address(), "/", &[]).await;
         assert_eq!(listing.status, 200);
         let html = String::from_utf8(listing.body).expect("listing should contain UTF-8 HTML");
-        assert_eq!(html.matches(escaped_name).count(), 3);
+        assert_eq!(html.matches(escaped_name).count(), 2);
         assert!(html.contains(&format!("<title>{escaped_name}</title>")));
         assert!(html.contains(&format!("<h1>{escaped_name}</h1>")));
         assert!(!html.contains("</title><script>alert"));
@@ -1151,7 +1246,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn requires_the_keychain_password_with_porta_basic_auth_realm() {
+    async fn password_restart_removes_auth_after_wrong_and_correct_password_checks() {
         let root = tempdir().expect("protected folder should be created");
         tokio::fs::write(root.path().join("private.txt"), b"private")
             .await
@@ -1197,6 +1292,17 @@ mod tests {
         assert_eq!(allowed.body, b"private");
 
         server.stop().await.expect("protected server should stop");
+        let unprotected = FileServer::start(FileServerConfig::new(root.path(), "Unprotected"))
+            .await
+            .expect("server should restart without a password");
+        let after_removal = request(unprotected.address(), "/private.txt", &[]).await;
+        assert_eq!(after_removal.status, 200);
+        assert_eq!(after_removal.body, b"private");
+        assert!(!after_removal.headers.contains_key("www-authenticate"));
+        unprotected
+            .stop()
+            .await
+            .expect("unprotected server should stop");
     }
 
     #[tokio::test]

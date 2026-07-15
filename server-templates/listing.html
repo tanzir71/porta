@@ -6,19 +6,18 @@
   server-side by replacing the placeholders below. No JS framework; the inline
   script only does client-side filtering and the upload widget.
 
-  Placeholders (simple string replacement):
-    {{SHARE_NAME}}   display name of the share
-    {{BREADCRUMB}}   HTML: <a href="/">Home</a> <span>/</span> <a …>sub</a> …
-    {{ROWS}}         HTML: one <a class="row" …> per entry (see template row below)
-    {{UPLOADS}}      "block" if allowUploads else "none"
+  Placeholders (simple string replacement; wrapped in double braces below):
+    SHARE_NAME   display name of the share
+    BREADCRUMB   HTML: <a href="/">Home</a> <span>/</span> <a …>sub</a> …
+    ROWS         HTML: one row link per entry (see template row below)
+    UPLOADS      "block" if allowUploads else "none"
 
   Row shape to generate per entry (dirs first, then files, both A→Z):
-    <a class="row" href="/path/to/entry{/ if dir}">
-      <span class="ic">{FOLDER_SVG or FILE_SVG}</span>
-      <span class="nm">name</span>
-      <span class="sz">1.2 MB</span>          (— for dirs)
-      <span class="dt">Jul 15, 2026</span>
-    </a>
+    a.row href=/path/to/entry{/ if dir}
+      span.ic  {FOLDER_SVG or FILE_SVG}
+      span.nm  name
+      span.sz  1.2 MB                              (— for dirs)
+      span.dt  Jul 15, 2026
 -->
 <html lang="en">
 <head>

@@ -44,6 +44,7 @@ const STOP_ERROR: &str =
     "Porta couldn't stop this share cleanly. Quit Porta, then check Activity Monitor for cloudflared.";
 const UNSTABLE_TUNNEL_ERROR: &str =
     "The tunnel keeps dropping. Porta will retry when you toggle it back on.";
+const FOLDER_MISSING_ERROR: &str = "This folder was moved or deleted. Pick it again to reshare.";
 const FIRST_VISITOR_BODY: &str = "Someone just opened your link.";
 const WINDOW_REFRESH_ERROR: &str = "Porta saved the change but couldn't refresh its windows. Close and reopen the window to see it.";
 
@@ -67,6 +68,12 @@ struct TunnelSession {
 #[derive(Default)]
 struct RetryState {
     consecutive_failures: u8,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SessionEnd {
+    ProcessExited,
+    FolderMissing,
 }
 
 impl RetryState {
@@ -367,7 +374,18 @@ async fn supervise_tunnel<R: Runtime>(
 
     let mut retries = RetryState::default();
     loop {
-        wait_for_process_end(&mut receiver).await;
+        if wait_for_session_end(&app, &share_id, &mut receiver).await == SessionEnd::FolderMissing {
+            if cleanup_session(&app, &share_id, generation).await {
+                let _ = transition_share(
+                    &app,
+                    &share_id,
+                    ShareStatus::Error,
+                    None,
+                    Some(FOLDER_MISSING_ERROR.to_owned()),
+                );
+            }
+            return;
+        }
         if !stop_managed_child(&manager, &share_id, generation).await {
             return;
         }
@@ -470,10 +488,14 @@ async fn shutdown_session(session: TunnelSession) -> Result<(), String> {
         },
         async move {
             match server {
-                Some(server) => matches!(
-                    tokio::time::timeout(GRACEFUL_STOP_TIMEOUT, server.stop()).await,
-                    Ok(Ok(()))
-                ),
+                Some(server) => {
+                    match tokio::time::timeout(GRACEFUL_STOP_TIMEOUT, server.stop()).await {
+                        Ok(result) => result.is_ok(),
+                        // Cancelling FileServer::stop drops the server and aborts its task,
+                        // which intentionally disconnects a visitor who is still downloading.
+                        Err(_) => true,
+                    }
+                }
                 None => true,
             }
         }
@@ -584,11 +606,56 @@ async fn wait_for_tunnel_url(
     .unwrap_or_else(|_| Err(CLOUDFLARE_ERROR.to_owned()))
 }
 
+#[cfg(test)]
 async fn wait_for_process_end(receiver: &mut tauri::async_runtime::Receiver<CommandEvent>) {
     while let Some(event) = receiver.recv().await {
         if matches!(event, CommandEvent::Error(_) | CommandEvent::Terminated(_)) {
             return;
         }
+    }
+}
+
+async fn wait_for_session_end<R: Runtime>(
+    app: &AppHandle<R>,
+    share_id: &str,
+    receiver: &mut tauri::async_runtime::Receiver<CommandEvent>,
+) -> SessionEnd {
+    let mut folder_check = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        tokio::select! {
+            event = receiver.recv() => {
+                if event.is_none_or(|event| {
+                    matches!(event, CommandEvent::Error(_) | CommandEvent::Terminated(_))
+                }) {
+                    return SessionEnd::ProcessExited;
+                }
+            }
+            _ = folder_check.tick() => {
+                if !share_source_available(app, share_id).await {
+                    return SessionEnd::FolderMissing;
+                }
+            }
+        }
+    }
+}
+
+async fn share_source_available<R: Runtime>(app: &AppHandle<R>, share_id: &str) -> bool {
+    let source = app
+        .state::<Store>()
+        .read(|shares, _| {
+            shares
+                .iter()
+                .find(|share| share.id == share_id)
+                .map(|share| (share.kind, share.path.clone()))
+        })
+        .ok()
+        .flatten();
+    match source {
+        Some((ShareKind::Port, _)) => true,
+        Some((ShareKind::Folder, Some(path))) => tokio::fs::metadata(path)
+            .await
+            .is_ok_and(|metadata| metadata.is_dir()),
+        Some((ShareKind::Folder, None)) | None => false,
     }
 }
 
@@ -642,12 +709,14 @@ mod tests {
     use tauri::{Listener, Manager};
     use tauri_plugin_shell::{process::CommandEvent, ShellExt};
     use tempfile::tempdir;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::{
         cloudflared_args, first_visitor_notification_title, retry_delay, send_signal,
         start_local_origin, stats_reporter, supervise_tunnel, transition_share, url_to_copy,
         wait_for_process_end, wait_for_process_exit, wait_for_tunnel_url, RetryState,
-        CLOUDFLARE_ERROR, FIRST_VISITOR_BODY, UNSTABLE_TUNNEL_ERROR, URL_TIMEOUT,
+        CLOUDFLARE_ERROR, FIRST_VISITOR_BODY, FOLDER_MISSING_ERROR, UNSTABLE_TUNNEL_ERROR,
+        URL_TIMEOUT,
     };
     use crate::{
         server::{FileServer, FileServerConfig},
@@ -983,6 +1052,101 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deleting_a_live_shared_folder_marks_it_error_and_stops_its_session() {
+        let data_dir = tempdir().expect("temporary store should be created");
+        let root = tempdir().expect("temporary share should be created");
+        let root_path = root.path().to_path_buf();
+        let store = Store::load_from_dir(data_dir.path()).expect("test store should load");
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/ipc_contract.json"))
+                .expect("fixture should contain JSON");
+        let mut share: crate::shares::Share = serde_json::from_value(fixture["share"].clone())
+            .expect("fixture share should deserialize");
+        share.path = Some(root_path.to_string_lossy().into_owned());
+        share.status = ShareStatus::Starting;
+        share.url = None;
+        share.error = None;
+        share.password_protected = false;
+        let share_id = share.id.clone();
+        store
+            .update(|shares, settings| {
+                shares.push(share);
+                settings.copy_url_on_start = false;
+                Ok(())
+            })
+            .expect("starting share should persist");
+
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_shell::init())
+            .manage(store)
+            .manage(super::TunnelManager::default())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app should build");
+        let (_child_receiver, child) = app
+            .shell()
+            .command("sleep")
+            .arg("30")
+            .spawn()
+            .expect("managed child should start");
+        let pid = child.pid();
+        let server = FileServer::start(FileServerConfig::new(&root_path, "Missing folder test"))
+            .await
+            .expect("local server should start");
+        let origin = server.address();
+        app.state::<super::TunnelManager>()
+            .state
+            .lock()
+            .await
+            .sessions
+            .insert(
+                share_id.clone(),
+                super::TunnelSession {
+                    generation: 1,
+                    server: Some(server),
+                    child: Some(child),
+                },
+            );
+        let (event_sender, event_receiver) = tauri::async_runtime::channel(2);
+        event_sender
+            .send(CommandEvent::Stderr(
+                b"https://missing-folder.trycloudflare.com".to_vec(),
+            ))
+            .await
+            .expect("live URL event should send");
+        root.close().expect("shared folder should be removed");
+
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            supervise_tunnel(
+                app.handle().clone(),
+                share_id.clone(),
+                1,
+                origin,
+                event_receiver,
+            ),
+        )
+        .await
+        .expect("missing-folder watcher should react promptly");
+        drop(event_sender);
+
+        let stored = app
+            .state::<Store>()
+            .read(|shares, _| shares[0].clone())
+            .expect("failed share should remain readable");
+        assert_eq!(stored.status, ShareStatus::Error);
+        assert_eq!(stored.url, None);
+        assert_eq!(stored.error.as_deref(), Some(FOLDER_MISSING_ERROR));
+        assert!(!super::process_is_running(pid));
+        assert!(app
+            .state::<super::TunnelManager>()
+            .state
+            .lock()
+            .await
+            .sessions
+            .is_empty());
+    }
+
+    #[tokio::test]
     async fn sigterm_stops_a_child_within_the_grace_period() {
         let mut child = Command::new("sleep")
             .arg("30")
@@ -1070,6 +1234,69 @@ mod tests {
 
         assert!(quit_started.elapsed() < super::GRACEFUL_STOP_TIMEOUT);
         assert!(!super::process_is_running(quit_pid));
+    }
+
+    #[tokio::test]
+    async fn stopping_during_a_download_drops_the_connection_without_an_orphan() {
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_shell::init())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app should build");
+        let (_receiver, child) = app
+            .shell()
+            .command("sleep")
+            .arg("30")
+            .spawn()
+            .expect("managed child should start");
+        let pid = child.pid();
+        let root = tempdir().expect("temporary share should be created");
+        let payload = std::fs::File::create(root.path().join("large.bin"))
+            .expect("large sparse download should be created");
+        payload
+            .set_len(64 * 1024 * 1024)
+            .expect("large sparse download should be sized");
+        drop(payload);
+        let server = FileServer::start(FileServerConfig::new(root.path(), "Download stop test"))
+            .await
+            .expect("local server should start");
+        let address = server.address();
+        let manager = super::TunnelManager::default();
+        manager.state.lock().await.sessions.insert(
+            "active-download".to_owned(),
+            super::TunnelSession {
+                generation: 1,
+                server: Some(server),
+                child: Some(child),
+            },
+        );
+
+        let mut visitor = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("visitor should connect");
+        visitor
+            .write_all(
+                format!("GET /large.bin HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            )
+            .await
+            .expect("visitor request should write");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let started = tokio::time::Instant::now();
+        manager
+            .stop("active-download")
+            .await
+            .expect("forced download stop should still be clean");
+        assert!(started.elapsed() <= super::GRACEFUL_STOP_TIMEOUT + Duration::from_millis(500));
+
+        let mut remaining = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), visitor.read_to_end(&mut remaining))
+            .await
+            .expect("visitor connection should close after the stop")
+            .ok();
+        assert!(!super::process_is_running(pid));
+        assert!(manager.state.lock().await.sessions.is_empty());
+        assert!(tokio::net::TcpStream::connect(address).await.is_err());
     }
 
     #[test]

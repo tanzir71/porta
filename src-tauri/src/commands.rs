@@ -180,12 +180,20 @@ pub(crate) fn spawn_auto_start_shares(app: &AppHandle, share_ids: Vec<String>) {
 }
 
 #[tauri::command]
-pub(crate) fn update_share(
+pub(crate) async fn update_share(
     app: AppHandle,
     store: State<'_, Store>,
+    tunnels: State<'_, TunnelManager>,
     id: String,
     patch: UpdateShareInput,
 ) -> Result<Share, String> {
+    let restart_runtime = store.read(|shares, _| {
+        shares
+            .iter()
+            .find(|share| share.id == id)
+            .map(|share| patch_requires_runtime_restart(share, &patch))
+            .ok_or_else(|| MISSING_SHARE.to_owned())
+    })??;
     let password_change = patch.password.clone();
     let previous_password = if password_change.is_some() {
         credentials::get_password(&id)?
@@ -218,7 +226,19 @@ pub(crate) fn update_share(
             share: saved.clone(),
         },
     )?;
-    Ok(saved)
+    if !restart_runtime {
+        return Ok(saved);
+    }
+
+    stop_share_in(&app, &tunnels, &id).await?;
+    start_share_in(&app, &tunnels, &id).await?;
+    store.read(|shares, _| {
+        shares
+            .iter()
+            .find(|share| share.id == id)
+            .cloned()
+            .unwrap_or(saved)
+    })
 }
 
 #[tauri::command]
@@ -418,6 +438,14 @@ fn apply_share_patch(share: &mut Share, patch: &UpdateShareInput) -> Result<(), 
     Ok(())
 }
 
+fn patch_requires_runtime_restart(share: &Share, patch: &UpdateShareInput) -> bool {
+    matches!(share.status, ShareStatus::Starting | ShareStatus::Live)
+        && share.kind == ShareKind::Folder
+        && (patch.password.is_some()
+            || patch.show_listing.is_some()
+            || patch.allow_uploads.is_some())
+}
+
 fn normalized_name(requested: Option<&str>, fallback: &str) -> Result<String, String> {
     let name = requested.unwrap_or(fallback).trim();
     if name.is_empty() {
@@ -550,7 +578,7 @@ mod tests {
 
     use super::{
         apply_settings_patch, apply_share_patch, build_share, create_share_in, delete_share_in,
-        emit_app_event, prepare_auto_start_share_ids,
+        emit_app_event, patch_requires_runtime_restart, prepare_auto_start_share_ids,
     };
     use crate::{
         settings::{Settings, SettingsPatch, Theme},
@@ -613,6 +641,53 @@ mod tests {
         assert!(!share.show_listing);
         assert!(share.allow_uploads);
         assert!(!share.auto_start);
+    }
+
+    #[test]
+    fn live_runtime_settings_restart_but_a_rename_preserves_the_public_url() {
+        let mut share = fixture_share();
+        share.kind = ShareKind::Folder;
+        share.status = ShareStatus::Live;
+        share.url = Some("https://same-link.trycloudflare.com".to_owned());
+
+        let rename = UpdateShareInput {
+            name: Some("Renamed while live".to_owned()),
+            ..UpdateShareInput::default()
+        };
+        assert!(!patch_requires_runtime_restart(&share, &rename));
+        apply_share_patch(&mut share, &rename).expect("rename should apply");
+        assert_eq!(share.name, "Renamed while live");
+        assert_eq!(share.status, ShareStatus::Live);
+        assert_eq!(
+            share.url.as_deref(),
+            Some("https://same-link.trycloudflare.com")
+        );
+
+        for patch in [
+            UpdateShareInput {
+                password: Some(None),
+                ..UpdateShareInput::default()
+            },
+            UpdateShareInput {
+                show_listing: Some(false),
+                ..UpdateShareInput::default()
+            },
+            UpdateShareInput {
+                allow_uploads: Some(true),
+                ..UpdateShareInput::default()
+            },
+        ] {
+            assert!(patch_requires_runtime_restart(&share, &patch));
+        }
+
+        share.status = ShareStatus::Stopped;
+        assert!(!patch_requires_runtime_restart(
+            &share,
+            &UpdateShareInput {
+                password: Some(Some("new password".to_owned())),
+                ..UpdateShareInput::default()
+            }
+        ));
     }
 
     #[test]
