@@ -11,6 +11,7 @@ use std::{
 
 use regex::Regex;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent},
     ShellExt,
@@ -526,6 +527,8 @@ pub(crate) fn transition_share<R: Runtime>(
         share.error = error;
         Ok(share.clone())
     })?;
+    let clipboard_url = store
+        .read(|_, settings| url_to_copy(&share, settings.copy_url_on_start).map(str::to_owned))?;
     app.emit(
         "app_event",
         AppEvent::ShareChanged {
@@ -533,7 +536,16 @@ pub(crate) fn transition_share<R: Runtime>(
         },
     )
     .map_err(|_| WINDOW_REFRESH_ERROR.to_owned())?;
+    if let Some(url) = clipboard_url {
+        let _ = app.clipboard().write_text(url);
+    }
     Ok(share)
+}
+
+fn url_to_copy(share: &Share, copy_url_on_start: bool) -> Option<&str> {
+    (copy_url_on_start && share.status == ShareStatus::Live)
+        .then_some(share.url.as_deref())
+        .flatten()
 }
 
 #[cfg(test)]
@@ -546,8 +558,8 @@ mod tests {
 
     use super::{
         cloudflared_args, retry_delay, send_signal, start_local_origin, supervise_tunnel,
-        transition_share, wait_for_process_end, wait_for_process_exit, wait_for_tunnel_url,
-        RetryState, CLOUDFLARE_ERROR, UNSTABLE_TUNNEL_ERROR, URL_TIMEOUT,
+        transition_share, url_to_copy, wait_for_process_end, wait_for_process_exit,
+        wait_for_tunnel_url, RetryState, CLOUDFLARE_ERROR, UNSTABLE_TUNNEL_ERROR, URL_TIMEOUT,
     };
     use crate::{
         server::{FileServer, FileServerConfig},
@@ -664,6 +676,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn copy_url_setting_selects_only_live_public_urls() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/ipc_contract.json"))
+                .expect("fixture should contain JSON");
+        let mut share: crate::shares::Share = serde_json::from_value(fixture["share"].clone())
+            .expect("fixture share should deserialize");
+        share.status = ShareStatus::Live;
+        share.url = Some("https://quiet-harbor.trycloudflare.com".to_owned());
+
+        assert_eq!(
+            url_to_copy(&share, true),
+            Some("https://quiet-harbor.trycloudflare.com")
+        );
+        assert_eq!(url_to_copy(&share, false), None);
+
+        share.status = ShareStatus::Starting;
+        assert_eq!(url_to_copy(&share, true), None);
+        share.status = ShareStatus::Live;
+        share.url = None;
+        assert_eq!(url_to_copy(&share, true), None);
+    }
+
     #[tokio::test]
     async fn unreachable_tunnel_persists_the_exact_actionable_error_and_cleans_up() {
         let (idle_sender, mut idle_receiver) = tauri::async_runtime::channel(1);
@@ -695,8 +730,9 @@ mod tests {
         share.password_protected = false;
         let share_id = share.id.clone();
         store
-            .update(|shares, _| {
+            .update(|shares, settings| {
                 shares.push(share);
+                settings.copy_url_on_start = false;
                 Ok(())
             })
             .expect("starting share should persist");
@@ -865,8 +901,9 @@ mod tests {
             .expect("fixture share should deserialize");
         let id = share.id.clone();
         store
-            .update(|shares, _| {
+            .update(|shares, settings| {
                 shares.push(share);
+                settings.copy_url_on_start = false;
                 Ok(())
             })
             .expect("fixture share should persist");
