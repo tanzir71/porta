@@ -10,6 +10,10 @@ use uuid::Uuid;
 
 use crate::{
     credentials,
+    provider::{
+        build_profile, cloudflare_quick_profile, profile_by_id, profile_view, ProviderProfileView,
+        ProviderTestResult, ResolvedProvider, SaveProviderProfileInput, CLOUDFLARE_QUICK_ID,
+    },
     settings::{Settings, SettingsPatch},
     shares::{AppEvent, CreateShareInput, Share, ShareKind, ShareStatus, UpdateShareInput},
     stats::ShareStats,
@@ -83,6 +87,7 @@ fn create_share_in<R: Runtime>(
     input: CreateShareInput,
 ) -> Result<Share, String> {
     let share = build_share(&input)?;
+    validate_provider_selection(store, share.provider_id.as_deref())?;
     let password = input.password.as_deref();
 
     if let Some(password) = password {
@@ -224,6 +229,9 @@ pub(crate) async fn update_share(
             .map(|share| patch_requires_runtime_restart(share, &patch))
             .ok_or_else(|| MISSING_SHARE.to_owned())
     })??;
+    if let Some(provider_id) = patch.provider_id.as_ref() {
+        validate_provider_selection(&store, provider_id.as_deref())?;
+    }
     let password_change = patch.password.clone();
     let previous_password = if password_change.is_some() {
         credentials::get_password(&id)?
@@ -375,13 +383,20 @@ pub(crate) fn get_settings(store: State<'_, Store>) -> Result<Settings, String> 
 }
 
 #[tauri::command]
-pub(crate) fn update_settings(
+pub(crate) async fn update_settings(
     app: AppHandle,
     store: State<'_, Store>,
+    tunnels: State<'_, TunnelManager>,
     patch: SettingsPatch,
 ) -> Result<Settings, String> {
     let previous = store.read(|_, settings| settings.clone())?;
     let next = apply_settings_patch(&previous, &patch);
+    validate_provider_selection(&store, Some(&next.default_provider_id))?;
+    let restart_inherited = previous.default_provider_id != next.default_provider_id;
+    let affected = restart_inherited
+        .then(|| live_share_ids(&store, |share| share.provider_id.is_none()))
+        .transpose()?
+        .unwrap_or_default();
 
     if let Err(error) = apply_setting_side_effects(&app, &previous, &next) {
         let _ = apply_setting_side_effects(&app, &next, &previous);
@@ -396,7 +411,198 @@ pub(crate) fn update_settings(
         let _ = apply_setting_side_effects(&app, &next, &previous);
     }
 
-    save_result
+    let saved = save_result?;
+    restart_share_ids(&app, &tunnels, affected).await?;
+    Ok(saved)
+}
+
+#[tauri::command]
+pub(crate) fn list_provider_profiles(
+    store: State<'_, Store>,
+) -> Result<Vec<ProviderProfileView>, String> {
+    let mut profiles = vec![profile_view(cloudflare_quick_profile(), true)];
+    let saved = store.read_with_providers(|_, _, profiles| profiles.to_vec())?;
+    for profile in saved {
+        let credential = credentials::get_provider_secret(&profile.id)?;
+        let configured = !profile
+            .kind
+            .requires_credential(profile.credential_env.as_deref())
+            || credential.as_deref().is_some_and(|value| !value.is_empty());
+        profiles.push(profile_view(profile, configured));
+    }
+    Ok(profiles)
+}
+
+#[tauri::command]
+pub(crate) async fn save_provider_profile(
+    app: AppHandle,
+    store: State<'_, Store>,
+    tunnels: State<'_, TunnelManager>,
+    input: SaveProviderProfileInput,
+) -> Result<ProviderProfileView, String> {
+    let existing = match input.id.as_deref() {
+        Some(CLOUDFLARE_QUICK_ID) => {
+            return Err("Cloudflare Quick Tunnel is built in and can't be edited.".to_owned())
+        }
+        Some(id) => store.read_with_providers(|_, _, profiles| {
+            profiles.iter().find(|profile| profile.id == id).cloned()
+        })?,
+        None => None,
+    };
+    if input.id.is_some() && existing.is_none() {
+        return Err(
+            "That provider profile no longer exists. Close Settings and try again.".to_owned(),
+        );
+    }
+
+    let profile = build_profile(input.clone(), existing.as_ref())?;
+    let previous_secret = credentials::get_provider_secret(&profile.id)?;
+    let next_secret = if input.clear_credential {
+        None
+    } else if let Some(secret) = input.credential.as_deref() {
+        let secret = secret.trim();
+        (!secret.is_empty()).then(|| secret.to_owned())
+    } else if existing
+        .as_ref()
+        .is_none_or(|existing| existing.kind == profile.kind)
+    {
+        previous_secret.clone()
+    } else {
+        None
+    };
+    if profile
+        .kind
+        .requires_credential(profile.credential_env.as_deref())
+        && next_secret.is_none()
+    {
+        return Err(format!(
+            "Enter the credential for “{}”, then try again.",
+            profile.name
+        ));
+    }
+
+    if next_secret != previous_secret {
+        credentials::replace_provider_secret(&profile.id, next_secret.as_deref())?;
+    }
+    let save_result = store.update_with_providers(|_, _, profiles| {
+        if let Some(existing) = profiles
+            .iter_mut()
+            .find(|existing| existing.id == profile.id)
+        {
+            *existing = profile.clone();
+        } else {
+            profiles.push(profile.clone());
+        }
+        Ok(())
+    });
+    if let Err(error) = save_result {
+        if next_secret != previous_secret {
+            let _ = credentials::replace_provider_secret(&profile.id, previous_secret.as_deref());
+        }
+        return Err(error);
+    }
+
+    let default_uses_profile =
+        store.read(|_, settings| settings.default_provider_id == profile.id)?;
+    let affected = live_share_ids(&store, |share| {
+        share.provider_id.as_deref() == Some(&profile.id)
+            || (share.provider_id.is_none() && default_uses_profile)
+    })?;
+    restart_share_ids(&app, &tunnels, affected).await?;
+    let configured = !profile
+        .kind
+        .requires_credential(profile.credential_env.as_deref())
+        || next_secret.is_some();
+    Ok(profile_view(profile, configured))
+}
+
+#[tauri::command]
+pub(crate) async fn delete_provider_profile(
+    store: State<'_, Store>,
+    id: String,
+) -> Result<(), String> {
+    if id == CLOUDFLARE_QUICK_ID {
+        return Err("Cloudflare Quick Tunnel is built in and can't be removed.".to_owned());
+    }
+    let profile = store.read_with_providers(|shares, settings, profiles| {
+        if settings.default_provider_id == id {
+            return Err(
+                "Choose a different default provider before removing this profile.".to_owned(),
+            );
+        }
+        if shares
+            .iter()
+            .any(|share| share.provider_id.as_deref() == Some(&id))
+        {
+            return Err(
+                "Choose another provider for every share using this profile, then remove it."
+                    .to_owned(),
+            );
+        }
+        profiles
+            .iter()
+            .find(|profile| profile.id == id)
+            .cloned()
+            .ok_or_else(|| {
+                "That provider profile no longer exists. Close Settings and try again.".to_owned()
+            })
+    })??;
+    let previous_secret = credentials::get_provider_secret(&id)?;
+    if previous_secret.is_some() {
+        credentials::replace_provider_secret(&id, None)?;
+    }
+    let result = store.update_with_providers(|_, _, profiles| {
+        let index = profiles
+            .iter()
+            .position(|saved| saved.id == profile.id)
+            .ok_or_else(|| {
+                "That provider profile no longer exists. Close Settings and try again.".to_owned()
+            })?;
+        profiles.remove(index);
+        Ok(())
+    });
+    if result.is_err() && previous_secret.is_some() {
+        let _ = credentials::replace_provider_secret(&id, previous_secret.as_deref());
+    }
+    result
+}
+
+#[tauri::command]
+pub(crate) async fn test_provider(
+    app: AppHandle,
+    store: State<'_, Store>,
+    id: String,
+) -> Result<ProviderTestResult, String> {
+    let profile = store.read_with_providers(|_, _, profiles| profile_by_id(profiles, &id))?;
+    let profile = profile.ok_or_else(|| {
+        "That provider profile no longer exists. Close Settings and try again.".to_owned()
+    })?;
+    let credential = if profile
+        .kind
+        .requires_credential(profile.credential_env.as_deref())
+    {
+        credentials::get_provider_secret(&profile.id)?
+    } else {
+        None
+    };
+    let provider = ResolvedProvider::new(profile, credential)?;
+    tunnel::test_provider_connection(&app, provider).await
+}
+
+#[tauri::command]
+pub(crate) fn pick_provider_executable(app: AppHandle) -> Result<Option<String>, String> {
+    app.dialog()
+        .file()
+        .set_title("Choose a tunnel provider executable")
+        .blocking_pick_file()
+        .map(|path| {
+            path.into_path()
+                .map_err(|_| {
+                    "Porta couldn't read that executable path. Choose the file again.".to_owned()
+                })
+                .and_then(path_to_string)
+        })
+        .transpose()
 }
 
 fn build_share(input: &CreateShareInput) -> Result<Share, String> {
@@ -444,6 +650,7 @@ fn build_share(input: &CreateShareInput) -> Result<Share, String> {
         show_listing: input.show_listing.unwrap_or(true),
         allow_uploads: input.allow_uploads.unwrap_or(false),
         auto_start: input.auto_start.unwrap_or(false),
+        provider_id: normalize_provider_override(input.provider_id.as_deref())?,
         stats: ShareStats::default(),
         created_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
     })
@@ -465,15 +672,22 @@ fn apply_share_patch(share: &mut Share, patch: &UpdateShareInput) -> Result<(), 
     if let Some(auto_start) = patch.auto_start {
         share.auto_start = auto_start;
     }
+    if let Some(provider_id) = patch.provider_id.as_ref() {
+        share.provider_id = normalize_provider_override(provider_id.as_deref())?;
+    }
     Ok(())
 }
 
 fn patch_requires_runtime_restart(share: &Share, patch: &UpdateShareInput) -> bool {
     matches!(share.status, ShareStatus::Starting | ShareStatus::Live)
-        && share.kind == ShareKind::Folder
-        && (patch.password.is_some()
-            || patch.show_listing.is_some()
-            || patch.allow_uploads.is_some())
+        && (patch
+            .provider_id
+            .as_ref()
+            .is_some_and(|provider_id| provider_id.as_deref() != share.provider_id.as_deref())
+            || (share.kind == ShareKind::Folder
+                && (patch.password.is_some()
+                    || patch.show_listing.is_some()
+                    || patch.allow_uploads.is_some())))
 }
 
 fn normalized_name(requested: Option<&str>, fallback: &str) -> Result<String, String> {
@@ -491,6 +705,72 @@ fn validate_password(password: Option<&str>) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+fn normalize_provider_override(provider_id: Option<&str>) -> Result<Option<String>, String> {
+    provider_id
+        .map(str::trim)
+        .map(|id| {
+            if id.is_empty() {
+                Err("Choose a tunnel provider, then try again.".to_owned())
+            } else {
+                Ok(id.to_owned())
+            }
+        })
+        .transpose()
+}
+
+fn validate_provider_selection(store: &Store, provider_id: Option<&str>) -> Result<(), String> {
+    let profile = store.read_with_providers(|_, settings, profiles| {
+        let id = provider_id.unwrap_or(&settings.default_provider_id);
+        profile_by_id(profiles, id).ok_or_else(|| {
+            "That tunnel provider no longer exists. Choose another provider, then try again."
+                .to_owned()
+        })
+    })??;
+    let credential = if profile
+        .kind
+        .requires_credential(profile.credential_env.as_deref())
+    {
+        credentials::get_provider_secret(&profile.id)?
+    } else {
+        None
+    };
+    ResolvedProvider::new(profile, credential).map(|_| ())
+}
+
+fn live_share_ids(
+    store: &Store,
+    matches_provider: impl Fn(&Share) -> bool,
+) -> Result<Vec<String>, String> {
+    store.read(|shares, _| {
+        shares
+            .iter()
+            .filter(|share| {
+                matches!(share.status, ShareStatus::Starting | ShareStatus::Live)
+                    && matches_provider(share)
+            })
+            .map(|share| share.id.clone())
+            .collect()
+    })
+}
+
+async fn restart_share_ids<R: Runtime>(
+    app: &AppHandle<R>,
+    tunnels: &TunnelManager,
+    ids: Vec<String>,
+) -> Result<(), String> {
+    let mut first_error = None;
+    for id in ids {
+        if let Err(error) = stop_share_in(app, tunnels, &id).await {
+            first_error.get_or_insert(error);
+            continue;
+        }
+        if let Err(error) = start_share_in(app, tunnels, &id).await {
+            first_error.get_or_insert(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 fn path_to_string(path: PathBuf) -> Result<String, String> {
@@ -522,6 +802,12 @@ fn apply_settings_patch(settings: &Settings, patch: &SettingsPatch) -> Settings 
             .copy_url_on_start
             .unwrap_or(settings.copy_url_on_start),
         theme: patch.theme.unwrap_or(settings.theme),
+        default_provider_id: patch
+            .default_provider_id
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_owned)
+            .unwrap_or_else(|| settings.default_provider_id.clone()),
     }
 }
 
@@ -665,6 +951,7 @@ mod tests {
             allow_uploads: None,
             auto_start: Some(true),
             start_now: Some(true),
+            provider_id: None,
         };
         let mut share = build_share(&input).expect("valid folder share should be built");
 
@@ -691,6 +978,7 @@ mod tests {
                 show_listing: Some(false),
                 allow_uploads: Some(true),
                 auto_start: Some(false),
+                provider_id: Some(None),
             },
         )
         .expect("valid patch should apply");
@@ -735,6 +1023,10 @@ mod tests {
                 allow_uploads: Some(true),
                 ..UpdateShareInput::default()
             },
+            UpdateShareInput {
+                provider_id: Some(Some("another-provider".to_owned())),
+                ..UpdateShareInput::default()
+            },
         ] {
             assert!(patch_requires_runtime_restart(&share, &patch));
         }
@@ -767,6 +1059,15 @@ mod tests {
         assert_eq!(next.auto_start_shares, settings.auto_start_shares);
         assert_eq!(next.show_dock_icon, settings.show_dock_icon);
         assert_eq!(next.copy_url_on_start, settings.copy_url_on_start);
+
+        let next = apply_settings_patch(
+            &settings,
+            &SettingsPatch {
+                default_provider_id: Some("  saved-provider  ".to_owned()),
+                ..SettingsPatch::default()
+            },
+        );
+        assert_eq!(next.default_provider_id, "saved-provider");
     }
 
     #[test]
@@ -863,6 +1164,7 @@ mod tests {
             allow_uploads: None,
             auto_start: None,
             start_now: None,
+            provider_id: None,
         })
         .expect("port share should be valid");
         let event = AppEvent::ShareChanged { share };
@@ -904,6 +1206,7 @@ mod tests {
                     allow_uploads: None,
                     auto_start: None,
                     start_now: Some(false),
+                    provider_id: None,
                 },
             )
             .expect("create command implementation should succeed");

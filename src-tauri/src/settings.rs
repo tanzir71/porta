@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::provider::CLOUDFLARE_QUICK_ID;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Theme {
@@ -18,6 +20,8 @@ pub struct Settings {
     pub notify_on_first_visitor: bool,
     pub copy_url_on_start: bool,
     pub theme: Theme,
+    #[serde(default = "default_provider_id")]
+    pub default_provider_id: String,
 }
 
 impl Default for Settings {
@@ -29,6 +33,7 @@ impl Default for Settings {
             notify_on_first_visitor: true,
             copy_url_on_start: true,
             theme: Theme::System,
+            default_provider_id: default_provider_id(),
         }
     }
 }
@@ -48,4 +53,10 @@ pub struct SettingsPatch {
     pub copy_url_on_start: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<Theme>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_provider_id: Option<String>,
+}
+
+fn default_provider_id() -> String {
+    CLOUDFLARE_QUICK_ID.to_owned()
 }

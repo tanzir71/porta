@@ -1116,6 +1116,80 @@ img {
   padding: 48px;
 }
 
+.feature-providers {
+  grid-column: span 2;
+  min-height: 340px;
+  display: grid;
+  grid-template-columns: 0.85fr 1.15fr;
+  align-items: center;
+  gap: 60px;
+  padding: 48px;
+}
+
+.provider-visual {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 17px;
+  background: var(--canvas);
+}
+
+.provider-row {
+  display: grid;
+  grid-template-columns: 38px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.provider-row.active {
+  border-color: rgba(10, 132, 255, 0.28);
+  box-shadow: 0 8px 24px rgba(10, 132, 255, 0.08);
+}
+
+.provider-glyph {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  color: var(--blue-dark);
+  background: var(--blue-soft);
+  border-radius: 10px;
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.provider-row b,
+.provider-row small {
+  display: block;
+}
+
+.provider-row b {
+  font-size: 12px;
+}
+
+.provider-row small {
+  margin-top: 3px;
+  color: var(--soft);
+  font-size: 9px;
+}
+
+.provider-row i {
+  padding: 5px 8px;
+  color: var(--green);
+  background: #eaf8ed;
+  border-radius: 999px;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 800;
+}
+
 .stats-visual {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -1813,7 +1887,8 @@ img {
   }
 
   .feature-large,
-  .feature-stats {
+  .feature-stats,
+  .feature-providers {
     grid-template-columns: 1fr;
   }
 
@@ -1821,7 +1896,8 @@ img {
     padding: 38px;
   }
 
-  .feature-stats {
+  .feature-stats,
+  .feature-providers {
     gap: 35px;
   }
 
@@ -1966,7 +2042,8 @@ img {
 
   .feature,
   .feature-large,
-  .feature-stats {
+  .feature-stats,
+  .feature-providers {
     grid-column: auto;
     padding: 28px;
   }
@@ -1975,8 +2052,18 @@ img {
     gap: 34px;
   }
 
-  .feature-stats {
+  .feature-stats,
+  .feature-providers {
     min-height: 0;
+  }
+
+  .provider-row {
+    grid-template-columns: 34px 1fr;
+  }
+
+  .provider-row i {
+    grid-column: 2;
+    justify-self: start;
   }
 
   .stats-visual {

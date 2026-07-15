@@ -2,6 +2,25 @@
 
 All notable changes to Porta are documented in this file.
 
+## [1.2.0] - 2026-07-15
+
+### Added
+
+- Configurable tunnel-provider profiles for managed Cloudflare tunnels, ngrok, and direct custom tunnel CLIs.
+- A global default provider plus optional per-share overrides without changing existing share data or IPC naming.
+- In-app provider setup, executable selection, secure credential entry, connection testing, readiness status, editing, and removal.
+- Provider-aware visitor address headers and a version-2 store migration that preserves all 1.1 shares.
+
+### Security
+
+- Provider tokens stay out of `store.json` and process arguments; Porta stores them in Keychain or Credential Manager and passes them through environment variables.
+- Custom commands are launched directly without a shell, with bounded arguments, validated executables, HTTPS URLs, headers, patterns, and environment-variable names.
+
+### Changed
+
+- Cloudflare Quick Tunnel remains the built-in, account-free default, while tunnel lifecycle, restart, cleanup, and status handling now operate through a provider-neutral adapter.
+- The app, README, release notes, and GitHub Pages explain provider choice and third-party account/terms responsibilities.
+
 ## [1.1.0] - 2026-07-15
 
 ### Added

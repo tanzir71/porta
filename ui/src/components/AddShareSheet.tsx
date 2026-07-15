@@ -1,7 +1,8 @@
 import React, { useState } from "react";
-import type { CreateShareInput, Share, UpdateShareInput } from "../lib/ipc";
+import type { CreateShareInput, ProviderProfile, Share, UpdateShareInput } from "../lib/ipc";
 import { FolderIcon } from "./Icons";
 import { folderBasename } from "../lib/platform";
+import { providerKindLabel } from "./ProviderSettings";
 
 /**
  * One sheet, two modes:
@@ -12,6 +13,8 @@ export interface AddShareSheetProps {
   mode: "create" | "edit";
   path?: string; // create mode
   share?: Share; // edit mode
+  profiles: ProviderProfile[];
+  defaultProviderId: string;
   onCreate: (input: CreateShareInput) => void;
   onSave: (id: string, patch: UpdateShareInput) => void;
   onClose: () => void;
@@ -28,13 +31,24 @@ export function AddShareSheet(props: AddShareSheetProps) {
   const [showListing, setShowListing] = useState(editing?.showListing ?? true);
   const [allowUploads, setAllowUploads] = useState(editing?.allowUploads ?? false);
   const [autoStart, setAutoStart] = useState(editing?.autoStart ?? false);
+  const [providerId, setProviderId] = useState(editing?.providerId ?? "");
+
+  const selectedProfile = props.profiles.find(
+    (profile) => profile.id === (providerId || props.defaultProviderId),
+  );
 
   const passwordInvalid = usePassword && !editing?.passwordProtected && password.length === 0;
 
   const submit = () => {
     if (passwordInvalid) return;
     if (editing) {
-      const patch: UpdateShareInput = { name, showListing, allowUploads, autoStart };
+      const patch: UpdateShareInput = {
+        name,
+        showListing,
+        allowUploads,
+        autoStart,
+        providerId: providerId || null,
+      };
       if (!usePassword) patch.password = null;
       else if (password) patch.password = password;
       props.onSave(editing.id, patch);
@@ -48,6 +62,7 @@ export function AddShareSheet(props: AddShareSheetProps) {
         allowUploads,
         autoStart,
         startNow: true,
+        providerId: providerId || undefined,
       });
     }
   };
@@ -80,6 +95,35 @@ export function AddShareSheet(props: AddShareSheetProps) {
             placeholder={basename}
             autoFocus
           />
+        </div>
+
+        <div className="field">
+          <label htmlFor="share-provider">Tunnel provider</label>
+          <select
+            id="share-provider"
+            className="select select-wide"
+            value={providerId}
+            onChange={(event) => setProviderId(event.target.value)}
+          >
+            <option value="">
+              Use default — {props.profiles.find((profile) => profile.id === props.defaultProviderId)?.name ?? "Cloudflare Quick Tunnel"}
+            </option>
+            {props.profiles.map((profile) => (
+              <option key={profile.id} value={profile.id} disabled={!profile.credentialConfigured}>
+                {profile.name}{profile.credentialConfigured ? "" : " — setup required"}
+              </option>
+            ))}
+          </select>
+          <div className="field-hint">
+            {selectedProfile
+              ? `${providerKindLabel(selectedProfile.kind)}${providerId ? " override" : " inherited from Settings"}.`
+              : "Choose a configured provider in Settings."}
+          </div>
+          {selectedProfile?.kind === "cloudflareManaged" && (
+            <div className="provider-route-hint">
+              Cloudflare dashboard route: <code>http://localhost:{selectedProfile.localPort}</code>
+            </div>
+          )}
         </div>
 
         <div className="opt-row">

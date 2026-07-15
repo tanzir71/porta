@@ -3,6 +3,7 @@ mod credentials;
 mod drag_drop;
 #[cfg(test)]
 mod error_audit;
+mod provider;
 pub mod server;
 pub mod settings;
 pub mod shares;
@@ -64,6 +65,11 @@ pub fn run() {
             commands::open_url,
             commands::get_settings,
             commands::update_settings,
+            commands::list_provider_profiles,
+            commands::save_provider_profile,
+            commands::delete_provider_profile,
+            commands::test_provider,
+            commands::pick_provider_executable,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|error| {

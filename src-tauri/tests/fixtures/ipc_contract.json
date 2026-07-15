@@ -12,6 +12,7 @@
     "showListing": true,
     "allowUploads": false,
     "autoStart": true,
+    "providerId": "cloudflare-quick",
     "stats": {
       "visitors": 4,
       "requests": 132,
@@ -25,7 +26,8 @@
     "showDockIcon": true,
     "notifyOnFirstVisitor": true,
     "copyUrlOnStart": true,
-    "theme": "system"
+    "theme": "system",
+    "defaultProviderId": "cloudflare-quick"
   },
   "createShareInput": {
     "kind": "folder",
@@ -35,14 +37,16 @@
     "showListing": true,
     "allowUploads": false,
     "autoStart": true,
-    "startNow": false
+    "startNow": false,
+    "providerId": "cloudflare-quick"
   },
   "updateShareInput": {
     "name": "Updated Mockups",
     "password": null,
     "showListing": false,
     "allowUploads": true,
-    "autoStart": false
+    "autoStart": false,
+    "providerId": null
   },
   "event": {
     "type": "stats_updated",

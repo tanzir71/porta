@@ -83,7 +83,7 @@ body {
 }
 
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
-input, select { font: inherit; }
+input, select, textarea { font: inherit; }
 ::selection { background: var(--accent-soft); }
 
 /* ---------- App shell ---------- */
@@ -382,6 +382,84 @@ kbd {
   border-radius: var(--radius-xs);
   border: 1px solid var(--border-strong);
   background: var(--bg-inset); color: var(--text);
+}
+.select-wide { width: 100%; height: 32px; }
+.field-hint {
+  margin-top: 5px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.35;
+}
+.text-area {
+  width: 100%; min-height: 86px; resize: vertical;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-inset); color: var(--text);
+  outline: none;
+}
+.text-area:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.code-input { font-family: var(--mono); font-size: 11.5px; }
+.input-action-row { display: flex; gap: 8px; align-items: center; }
+.input-action-row .text-input { flex: 1; min-width: 0; }
+.field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.field-grid .field { min-width: 0; }
+.check-row {
+  display: flex !important; align-items: center; gap: 7px;
+  margin-top: 8px !important; color: var(--text-secondary); font-weight: 400 !important;
+}
+
+/* ---------- Tunnel provider settings ---------- */
+
+.provider-settings { margin-top: 8px; }
+.provider-list { display: flex; flex-direction: column; gap: 7px; }
+.provider-card {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+}
+.provider-card-copy { min-width: 0; flex: 1; }
+.provider-card-title { display: flex; align-items: center; gap: 7px; font-weight: 600; }
+.provider-card-kind { margin-top: 2px; font-size: 11px; color: var(--text-tertiary); }
+.provider-card-actions { display: flex; align-items: center; gap: 2px; }
+.provider-card-actions .btn { height: 26px; padding: 0 7px; font-size: 11.5px; }
+.provider-state {
+  display: inline-flex; height: 18px; align-items: center;
+  border-radius: 9px; padding: 0 7px; font-size: 9.5px; font-weight: 700;
+}
+.provider-state.ready { color: var(--green); background: var(--green-soft); }
+.provider-state.needs-setup { color: var(--amber); background: var(--amber-soft); }
+.danger-text { color: var(--red); }
+.add-provider { margin-top: 9px; width: 100%; justify-content: center; }
+.provider-editor {
+  margin-top: 10px; padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-inset) 65%, var(--bg-elevated));
+}
+.provider-editor-head,
+.provider-editor-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.provider-editor-head { margin-bottom: 12px; }
+.provider-editor-actions { justify-content: flex-end; margin-top: 12px; }
+.provider-editor .field:last-of-type { margin-bottom: 0; }
+.provider-notice,
+.provider-route-hint {
+  margin-top: 9px; padding: 8px 10px;
+  border-radius: var(--radius-xs); font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+.provider-notice.success { color: var(--green); background: var(--green-soft); }
+.provider-notice.error { color: var(--red); background: var(--red-soft); }
+.provider-route-hint { color: var(--text-secondary); background: var(--bg-inset); }
+.provider-route-hint code { user-select: text; font-family: var(--mono); font-size: 11px; }
+.provider-label { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 470px) {
+  .field-grid { grid-template-columns: 1fr; gap: 0; }
+  .provider-card { align-items: flex-start; flex-direction: column; }
+  .provider-card-actions { width: 100%; justify-content: flex-end; }
 }
 
 /* ---------- Toasts ---------- */

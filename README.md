@@ -1,9 +1,10 @@
 # Porta
 
 Porta is a free desktop app for sharing a folder or local web server with a
-public HTTPS link. Pick or drag in a folder, and Porta serves it through a
-Cloudflare Quick Tunnel without an account, a terminal command, or a hosted
-Porta service. Porta supports Windows 10/11 x64 and Apple-silicon macOS.
+public HTTPS link. Pick or drag in a folder, and Porta serves it through its
+built-in, account-free Cloudflare Quick Tunnel—or a tunnel provider you
+configure. No terminal or hosted Porta service is required. Porta supports
+Windows 10/11 x64 and Apple-silicon macOS.
 
 ![Porta — Share a folder. Get a link.](site/assets/og.png)
 
@@ -14,10 +15,33 @@ Porta service. Porta supports Windows 10/11 x64 and Apple-silicon macOS.
 - Adds optional password protection, request/visitor stats, and first-visitor notifications.
 - Copies new links automatically and keeps active shares running from the system tray.
 - Can launch at login and restart selected shares automatically.
-- Stores share settings locally and passwords in the operating system credential store.
+- Lets you choose a default tunnel provider and override it per share.
+- Stores share settings locally and passwords/provider tokens in the operating system credential store.
 
-Porta bundles `cloudflared`; users do not need to install it separately or
-create a Cloudflare account. Porta has no analytics or telemetry.
+Porta bundles `cloudflared` for Cloudflare Quick and managed tunnels. It also
+supports ngrok and direct custom CLI profiles. Porta has no analytics or
+telemetry.
+
+## Tunnel providers
+
+Cloudflare Quick Tunnel remains the zero-configuration default. In **Settings →
+Tunnel providers**, you can also add:
+
+- **Cloudflare managed tunnel:** paste a tunnel token and public HTTPS URL, then
+  set the dashboard route to the local port shown by Porta.
+- **ngrok:** select the ngrok executable, add an authtoken, and optionally enter
+  a reserved URL.
+- **Custom command:** select any tunnel CLI, enter one argument per line, and
+  tell Porta how to discover the public URL or readiness message. Porta expands
+  `{origin}`, `{host}`, and `{port}` without invoking a shell.
+
+Set one profile as the default or choose a different profile while creating or
+editing an individual share. Provider credentials are passed only through
+environment variables and stored in Keychain or Credential Manager—not in
+`store.json`. The selected third-party provider's own account, limits, terms,
+and privacy practices still apply. Only select executables you trust: a custom
+provider process runs with your user account's permissions while its share is
+active.
 
 ## Security and appropriate use
 
@@ -28,8 +52,8 @@ when you are finished.
 
 Password protection uses HTTP Basic authentication at Porta's local server.
 The browser connection is HTTPS, but Porta does not provide end-to-end
-encryption from the browser through Cloudflare to the shared files, and it
-should not be described as doing so.
+encryption from the browser through the selected tunnel provider to the shared
+files, and it should not be described as doing so.
 
 Cloudflare documents Quick Tunnels as a testing and development feature, not a
 production hosting service. They have no SLA, support at most 200 concurrent
@@ -47,7 +71,7 @@ system warning.
 ### Windows 10/11 x64
 
 Download
-[`Porta_1.1.0_x64-setup.exe`](https://github.com/tanzir71/porta/releases/latest/download/Porta_1.1.0_x64-setup.exe)
+[`Porta_1.2.0_x64-setup.exe`](https://github.com/tanzir71/porta/releases/latest/download/Porta_1.2.0_x64-setup.exe)
 and run it. The installer is unsigned, so Microsoft Defender SmartScreen may
 show **Windows protected your PC**. Select **More info**, confirm the installer
 came from this repository, then select **Run anyway**. Porta installs for the
@@ -56,7 +80,7 @@ current user without administrator access.
 ### Apple-silicon macOS
 
 Download
-[`Porta_1.1.0_aarch64.dmg`](https://github.com/tanzir71/porta/releases/latest/download/Porta_1.1.0_aarch64.dmg),
+[`Porta_1.2.0_aarch64.dmg`](https://github.com/tanzir71/porta/releases/latest/download/Porta_1.2.0_aarch64.dmg),
 open it, and drag Porta to Applications. The app is ad-hoc signed and not
 notarized, so macOS will likely block its first launch:
 
@@ -99,7 +123,9 @@ cargo fmt --manifest-path src-tauri/Cargo.toml --check
 
 Porta is a Tauri 2 application with a React/TypeScript interface and a Rust
 backend. Folder shares are served from a loopback-only Axum server, and the
-bundled `cloudflared` sidecar connects that server—or a selected local port—to
-Cloudflare's edge. Share state is stored atomically in the app-data directory;
-passwords are kept out of that file and stored in Keychain on macOS or
-Credential Manager on Windows.
+provider adapter connects that server—or a selected local port—to the chosen
+tunnel service. Cloudflare Quick uses the bundled `cloudflared` sidecar;
+managed Cloudflare, ngrok, and custom profiles keep the same IPC and share
+model. Share state is stored atomically in the app-data directory; passwords
+and provider credentials are kept out of that file and stored in Keychain on
+macOS or Credential Manager on Windows.

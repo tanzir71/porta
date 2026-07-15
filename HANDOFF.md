@@ -1,20 +1,20 @@
 # Porta — Codex Handoff & Build Loop
 
-**Porta** is a free, UI-first tunneling app for macOS and Windows. Users visually pick folders (or local ports) and get a public `https://` link instantly — like ngrok, but zero-config, zero-cost, and designed for non-terminal people.
+**Porta** is a free, UI-first tunneling app for macOS and Windows. Users visually pick folders (or local ports) and get a public `https://` link instantly. Cloudflare Quick Tunnel remains zero-config and account-free; managed Cloudflare, ngrok, and custom tunnel CLIs can be configured in the UI.
 
-This document is a **loopable work order**. Run it iteration after iteration until every checkbox in [§7 Milestones](#7-milestones--the-loop-state) is checked. §8 defines the loop protocol. The React UI is **already built and final** — your job is the Rust/Tauri backend and wiring.
+This document is a **loopable work order**. Run it iteration after iteration until every checkbox in [§7 Milestones](#7-milestones--the-loop-state) is checked. §8 defines the loop protocol. Preserve the established React design while extending the Rust/Tauri backend and IPC contract additively.
 
 ---
 
 ## 1. Product principles (read every loop)
 
-1. **Free forever.** No accounts, no servers we run, no paid APIs. Tunnels ride Cloudflare Quick Tunnels (`cloudflared`), which need no account and have no bandwidth cap.
+1. **Free forever.** Porta has no account, paid API, or server we run. The built-in Cloudflare Quick option remains account-free; user-configured providers may require their own account or plan.
 2. **Grandma-simple.** Drag folder in → link on clipboard. Every error message must say what to do next, in plain words.
 3. **The UI is the spec.** Everything visible in `ui/src` must work exactly as the components imply. Never simplify a feature because the backend is hard.
 4. **Quiet resident app.** System-tray first: closing the window hides it; the app keeps serving. Quit only from the tray menu.
-5. **Honest security.** Quick Tunnel URLs are unguessable but public. Password protection is our auth layer (basic-auth at the local server). Never claim end-to-end encryption.
+5. **Honest security.** Tunnel URLs are public to anyone who has them. Password protection is our auth layer (basic-auth at the local server). Never claim end-to-end encryption, and explain that each selected provider's terms apply.
 
-**Non-goals (do not build):** custom domains, TCP tunnels, accounts/sync, Linux, Windows ARM64/32-bit, analytics/telemetry of any kind.
+**Non-goals (do not build):** Porta-managed domains or DNS, TCP tunnels, Porta accounts/sync, Linux, Windows ARM64/32-bit, analytics/telemetry of any kind.
 
 ---
 
@@ -31,7 +31,7 @@ This document is a **loopable work order**. Run it iteration after iteration unt
 | **Pinggy / localhost.run** | Freemium | No (SSH one-liners) | No | Session limits on free tier; random URLs |
 | **bore / frp / chisel** | Free, OSS | No | No | Need your own VPS; deeply technical |
 
-**The gap Porta fills:** every free option is CLI-only; every GUI option costs money or needs an account. Nobody makes *folder sharing* (not port forwarding) the primary object. Porta = LocalCan's polish + cloudflared's free transport + a native desktop folder mental model. Password protection and visitor stats — paid features elsewhere — are free here because they live in our local server, not the tunnel provider.
+**The gap Porta fills:** tunnel vendors remain CLI-first, while folder sharing is rarely the primary object. Porta adds a native desktop folder mental model over a replaceable provider layer. Password protection and visitor stats stay free because they live in Porta's local server, not the tunnel provider.
 
 *Sources: [ngrok free plan limits](https://ngrok.com/docs/pricing-limits/free-plan-limits), [ngrok pricing](https://ngrok.com/pricing), [Cloudflare Quick Tunnels docs](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/), [LocalCan](https://www.localcan.com/), [Tailscale Funnel](https://tailscale.com/docs/features/tailscale-funnel), [awesome-tunneling](https://github.com/anderspitman/awesome-tunneling), [Pinggy: ngrok alternatives](https://pinggy.io/blog/best_ngrok_alternatives/).*
 
@@ -50,22 +50,22 @@ This document is a **loopable work order**. Run it iteration after iteration unt
 │                    • basic-auth middleware (password from OS credentials) │
 │                    • multipart upload handler (if allowUploads)           │
 │                    • stats middleware (visitors/requests/bytes)           │
-│    TunnelManager — spawns bundled `cloudflared tunnel --url http://…`     │
-│                    parses public URL from stderr, supervises, restarts    │
+│    TunnelManager — resolves a provider profile, launches its direct CLI   │
+│                    discovers the public URL, supervises, and restarts     │
 │    Tray          — menu-bar/notification icon, quick toggles, Quit        │
 │    Autostart     — tauri-plugin-autostart (launch at login)               │
 └───────────────────────────────────────────────────────────────────────────┘
-         folder share:  Browser → Cloudflare edge → cloudflared → axum → disk
-         port share:    Browser → Cloudflare edge → cloudflared → localhost:PORT
+         folder share:  Browser → selected provider → tunnel CLI → axum → disk
+         port share:    Browser → selected provider → tunnel CLI → localhost:PORT
 ```
 
 **Key decisions (do not relitigate):**
-- **Tauri v2**, stable channel. Bundle the target-specific `cloudflared` binary as a Tauri *sidecar* — never require the user to install anything.
-- One axum server per active folder share, bound to `127.0.0.1:0` (OS-assigned port). Port shares skip axum; cloudflared points at the user's port directly.
-- URL parsing: cloudflared prints `https://<random>.trycloudflare.com` on stderr within ~5 s. Regex `https://[a-z0-9-]+\.trycloudflare\.com`. Timeout 30 s → status `error` with message "Couldn't reach Cloudflare — check your internet connection and try again."
-- Supervision: if cloudflared exits while a share is `live`, auto-restart with backoff 1 s → 2 s → 4 s… (max 60 s), keep status `live` unless 3 consecutive failures → `error`: "The tunnel keeps dropping. Porta will retry when you toggle it back on."
-- Passwords: store in macOS Keychain or Windows Credential Manager via the `keyring` crate, never in the JSON store. JSON keeps only `passwordProtected: bool`.
-- Stats: middleware counts requests/bytes; "visitors" = unique `Cf-Connecting-Ip` header values since start (HashSet, reset on start).
+- **Tauri v2**, stable channel. Bundle target-specific `cloudflared` for the zero-config default and managed Cloudflare profiles. ngrok/custom profiles use an executable explicitly selected by the user.
+- One axum server per active folder share, normally bound to `127.0.0.1:0`; provider profiles may require a fixed local port. Port shares skip axum and point the provider at the user's port directly.
+- `ProviderProfile` supports Cloudflare Quick, managed Cloudflare, ngrok, and custom direct commands. Custom arguments are never shell-parsed and can expand `{origin}`, `{host}`, and `{port}`.
+- URL/readiness discovery is provider-specific and bounded to 30 seconds. Supervision restarts the selected process with the existing 1 s → 2 s → 4 s… backoff and three-strike error policy.
+- Passwords and provider tokens are stored in macOS Keychain or Windows Credential Manager via `keyring`, never in the JSON store or process arguments.
+- Stats middleware counts requests/bytes and normalizes the selected provider's visitor header, with safe fallbacks for `Cf-Connecting-Ip`, `X-Forwarded-For`, and `X-Real-Ip`.
 - Quick Tunnels don't support SSE and cap at 200 in-flight requests — irrelevant for file sharing, but document in README.
 
 ---
@@ -80,14 +80,14 @@ tunnel/
 │   └── src/
 │       ├── main.tsx  App.tsx  styles.css
 │       ├── lib/ipc.ts       ← ★ THE CONTRACT ★
-│       └── components/{Icons,ShareCard,AddShareSheet,SettingsSheet,EmptyState}.tsx
+│       └── components/{Icons,ShareCard,AddShareSheet,SettingsSheet,ProviderSettings,EmptyState}.tsx
 ├── server-templates/
 │   └── listing.html         ← visitor-facing directory page (embed via include_str!)
 └── src-tauri/               ← YOU CREATE THIS (tauri init, then implement)
     ├── Cargo.toml  tauri.conf.json  tauri.{macos,windows}.conf.json  capabilities/
     ├── binaries/cloudflared-{aarch64-apple-darwin,x86_64-pc-windows-msvc.exe}  ← sidecars
     ├── icons/
-    └── src/{main,shares,server,tunnel,tray,settings,stats}.rs
+    └── src/{main,shares,server,tunnel,provider,credentials,tray,settings,stats}.rs
 ```
 
 ---
@@ -108,6 +108,11 @@ tunnel/
 | `reveal_in_finder` | `(path) → void` | |
 | `open_url` | `(url) → void` | default browser (tauri-plugin-opener) |
 | `get_settings` / `update_settings` | `→ Settings` | see Settings type |
+| `list_provider_profiles` | `() → ProviderProfile[]` | includes immutable Cloudflare Quick default |
+| `save_provider_profile` | `(input) → ProviderProfile` | secret is transacted through OS credentials |
+| `delete_provider_profile` | `(id) → void` | blocked while default or explicitly assigned |
+| `test_provider` | `(id) → ProviderTestResult` | starts a temporary loopback origin and cleans up |
+| `pick_provider_executable` | `() → string \| null` | native file picker; backend revalidates absolute file |
 
 **Events:** emit `app_event` (payload = `AppEvent` union) on every status/url change, removal, and a stats tick **at most once per second** per share.
 
@@ -119,6 +124,7 @@ tunnel/
 - `showDockIcon` → macOS activation policy or Windows `set_skip_taskbar`; persisted name stays unchanged for compatibility.
 - `copyUrlOnStart` → when a share transitions to `live`, write URL to clipboard (tauri-plugin-clipboard-manager).
 - `notifyOnFirstVisitor` → native notification on a share's first unique visitor (tauri-plugin-notification): title = share name, body = "Someone just opened your link."
+- `defaultProviderId` → the provider inherited by shares whose compatibility-preserving `providerId` field is absent/null. Changing it restarts only live inherited shares.
 
 ---
 
@@ -129,7 +135,7 @@ tunnel/
 3. Window close = hide (keep serving). Real quit only from tray. Quitting stops all tunnels cleanly within 3 seconds using the platform's supported process-termination path.
 4. Serve **only** within the shared folder — canonicalize every request path and reject traversal (`..`, symlinks escaping the root) with 404.
 5. Uploads: only when `allowUploads`; reject files > 2 GB; never overwrite — collide as `name (2).ext`.
-6. No telemetry, no network calls except cloudflared itself.
+6. No telemetry and no Porta-hosted network calls. Only the selected tunnel-provider process may connect externally.
 7. Conventional commits; one milestone criterion (or coherent group) per commit.
 8. `cargo clippy -- -D warnings` and `cargo fmt --check` must pass before any commit.
 
@@ -205,6 +211,15 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 - [x] Version 1.1.0 release contains Apple-silicon DMG and Windows x64 setup EXE with matching SHA-256 attachments
 - [x] README, release notes, and GitHub Pages present platform-specific downloads and Gatekeeper/SmartScreen instructions
 
+### M9 — Configurable providers 1.2
+- [x] Version-2 store migration preserves every 1.1 share and defaults absent provider fields to built-in Cloudflare Quick
+- [x] Managed Cloudflare, ngrok, and custom profiles validate configuration, keep credentials in OS storage, pass secrets only through environment variables, and never invoke a shell
+- [x] Settings UI supports provider add/edit/remove/test/default flows; individual shares can inherit or override the default provider
+- [x] Tunnel lifecycle, retry, local-port binding, URL readiness, visitor headers, live-profile restarts, and cleanup are provider-neutral
+- [x] Rust, TypeScript, clippy, formatting, browser UI, migration, secret-persistence, path, and process-lifecycle gates pass locally
+- [x] Local Apple-silicon 1.2.0 DMG is ad-hoc signed, mounts with version metadata intact, starts and quits through the installed-app path, leaves no orphan, and remains below 25 MB
+- [ ] Version 1.2.0 release contains refreshed Apple-silicon DMG and Windows x64 setup EXE with verified SHA-256 attachments, and GitHub Pages publishes the final checksums
+
 ---
 
 ## 8. Loop protocol (run this every iteration)
@@ -236,10 +251,14 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 - Two shares of the same folder → both work independently
 - Delete the folder on disk while shared → status `error`: "This folder was moved or deleted. Pick it again to reshare."
 - Quit from tray → no `cloudflared` process remains in Activity Monitor or Task Manager
+- Add and test one managed Cloudflare, ngrok, and custom profile; confirm tokens never appear in `store.json` or process arguments
+- Change the default while an inherited share is live, then switch one share to an override; confirm only affected tunnel processes restart
+- Stop/test/quit every provider kind → no tunnel-provider process remains in Activity Monitor or Task Manager
 - Fresh macOS or Windows user account → app launches, no missing-permission crashes
 
 ## 10. Blockers (append-only)
 
+- [~] **M3 public-tunnel recheck for 1.2 (2026-07-15):** the ignored live smoke test again started the real bundled helper and received `https://employees-urban-casino-hometown.trycloudflare.com/porta-live-smoke.txt`, but every download attempt failed with local DNS error `Could not resolve host` until the bounded 90-second deadline. The guard stopped and reaped the helper. This reconfirms the environment-level DNS limitation below; deterministic server, adapter, package, and orphan gates remain green.
 - [~] **M3 live phone verification (2026-07-15):** macOS Accessibility permission blocked automated interaction with the running Porta window. Two runs of `cargo test --test live_tunnel_smoke -- --ignored --nocapture` started Porta's real file server, launched the bundled cloudflared, received valid Quick Tunnel URLs, and left zero orphan processes, but this environment retained negative DNS results after `1.1.1.1` resolved the host; direct edge-IP download also timed out. Re-run the ignored smoke test on an unrestricted network, then open its printed URL on a phone and download the fixture.
 - [~] **M4 cellular stats verification (2026-07-15):** `cargo test server::tests::counts_requests_streamed_bytes_and_unique_cloudflare_visitors -- --exact` passes and proves two distinct `Cf-Connecting-Ip` values produce `visitors=2`, but a physical cellular phone is unavailable and the M3 public-tunnel blocker prevents an honest UI/device check. After resolving M3, load the URL once on Wi-Fi and once on cellular, then confirm the card shows two visitors.
 - [~] **M5 login-session verification (2026-07-15):** a temporary opted-in folder share proved that direct app startup registers `~/Library/LaunchAgents/Porta.plist`, creates the tray, auto-starts cloudflared, reaches `live`, and serves its public listing successfully. Two safer `launchctl bootstrap gui/$UID` login simulations loaded the agent but the unsigned debug executable stalled inside `dyld` before Porta setup; forcibly logging out the active Codex desktop would be disruptive and still would not represent the later bundled app. Re-run this check with the signed-or-ad-hoc `.app` produced by M6: enable Launch at Login, log out/in, then confirm the tray appears and an opted-in share becomes reachable.

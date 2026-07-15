@@ -33,6 +33,8 @@ pub struct Share {
     pub show_listing: bool,
     pub allow_uploads: bool,
     pub auto_start: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
     pub stats: ShareStats,
     pub created_at: String,
 }
@@ -57,6 +59,8 @@ pub struct CreateShareInput {
     pub auto_start: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_now: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,6 +80,12 @@ pub struct UpdateShareInput {
     pub allow_uploads: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_start: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub provider_id: Option<Option<String>>,
 }
 
 fn deserialize_double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>

@@ -1,6 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ipc } from "./lib/ipc";
-import type { CreateShareInput, Settings, Share, UpdateShareInput } from "./lib/ipc";
+import type {
+  CreateShareInput,
+  ProviderProfile,
+  SaveProviderProfileInput,
+  Settings,
+  Share,
+  UpdateShareInput,
+} from "./lib/ipc";
 import { ShareCard } from "./components/ShareCard";
 import { AddShareSheet } from "./components/AddShareSheet";
 import { SettingsSheet } from "./components/SettingsSheet";
@@ -19,6 +26,7 @@ interface Toast { id: number; text: string; }
 export default function App() {
   const [shares, setShares] = useState<Share[] | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [profiles, setProfiles] = useState<ProviderProfile[] | null>(null);
   const [sheet, setSheet] = useState<Sheet>({ kind: "none" });
   const [dragging, setDragging] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -35,6 +43,7 @@ export default function App() {
   useEffect(() => {
     ipc.listShares().then(setShares);
     ipc.getSettings().then(setSettings);
+    ipc.listProviderProfiles().then(setProfiles);
     return ipc.onEvent((e) => {
       setShares((prev) => {
         if (!prev) return prev;
@@ -131,9 +140,44 @@ export default function App() {
   };
 
   const changeSettings = async (patch: Partial<Settings>) => {
-    setSettings((s) => (s ? { ...s, ...patch } : s)); // optimistic
-    const next = await ipc.updateSettings(patch);
-    setSettings(next);
+    const previous = settings;
+    setSettings((current) => (current ? { ...current, ...patch } : current));
+    try {
+      const next = await ipc.updateSettings(patch);
+      setSettings(next);
+    } catch (error) {
+      try {
+        setSettings(await ipc.getSettings());
+      } catch {
+        setSettings(previous);
+      }
+      throw error;
+    }
+  };
+
+  const saveProvider = async (input: SaveProviderProfileInput) => {
+    try {
+      const saved = await ipc.saveProviderProfile(input);
+      setProfiles((current) => {
+        if (!current) return [saved];
+        return current.some((profile) => profile.id === saved.id)
+          ? current.map((profile) => profile.id === saved.id ? saved : profile)
+          : [...current, saved];
+      });
+      return saved;
+    } catch (error) {
+      try {
+        setProfiles(await ipc.listProviderProfiles());
+      } catch {
+        // Keep the last readable list; reopening Settings retries the load.
+      }
+      throw error;
+    }
+  };
+
+  const deleteProvider = async (id: string) => {
+    await ipc.deleteProviderProfile(id);
+    setProfiles((current) => current?.filter((profile) => profile.id !== id) ?? current);
   };
 
   // ---- HTML5 drag handlers (browser/mock path) ----
@@ -176,6 +220,7 @@ export default function App() {
               <ShareCard
                 key={s.id}
                 share={s}
+                providerName={profiles?.find((profile) => profile.id === (s.providerId ?? settings?.defaultProviderId))?.name ?? "Unknown provider"}
                 onToggle={toggleShare}
                 onCopy={copyUrl}
                 onOpenUrl={(u) => ipc.openUrl(u)}
@@ -191,13 +236,38 @@ export default function App() {
       {dragging && <div className="drop-overlay">Drop to share this folder</div>}
 
       {sheet.kind === "create" && (
-        <AddShareSheet mode="create" path={sheet.path} onCreate={createShare} onSave={saveShare} onClose={() => setSheet({ kind: "none" })} />
+        <AddShareSheet
+          mode="create"
+          path={sheet.path}
+          profiles={profiles ?? []}
+          defaultProviderId={settings?.defaultProviderId ?? "cloudflare-quick"}
+          onCreate={createShare}
+          onSave={saveShare}
+          onClose={() => setSheet({ kind: "none" })}
+        />
       )}
       {sheet.kind === "edit" && (
-        <AddShareSheet mode="edit" share={sheet.share} onCreate={createShare} onSave={saveShare} onClose={() => setSheet({ kind: "none" })} />
+        <AddShareSheet
+          mode="edit"
+          share={sheet.share}
+          profiles={profiles ?? []}
+          defaultProviderId={settings?.defaultProviderId ?? "cloudflare-quick"}
+          onCreate={createShare}
+          onSave={saveShare}
+          onClose={() => setSheet({ kind: "none" })}
+        />
       )}
-      {sheet.kind === "settings" && settings && (
-        <SettingsSheet settings={settings} onChange={changeSettings} onClose={() => setSheet({ kind: "none" })} />
+      {sheet.kind === "settings" && settings && profiles && (
+        <SettingsSheet
+          settings={settings}
+          profiles={profiles}
+          onChange={changeSettings}
+          onSaveProvider={saveProvider}
+          onDeleteProvider={deleteProvider}
+          onTestProvider={(id) => ipc.testProvider(id)}
+          onPickProviderExecutable={() => ipc.pickProviderExecutable()}
+          onClose={() => setSheet({ kind: "none" })}
+        />
       )}
 
       <div className="toasts">

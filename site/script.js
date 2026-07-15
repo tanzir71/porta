@@ -1,7 +1,7 @@
 (() => {
   const releaseAssets = {
-    windows: "Porta_1.1.0_x64-setup.exe",
-    macos: "Porta_1.1.0_aarch64.dmg",
+    windows: "Porta_1.2.0_x64-setup.exe",
+    macos: "Porta_1.2.0_aarch64.dmg",
   };
   const preferredPlatform = /Windows/i.test(navigator.userAgent) ? "windows" : "macos";
   const configuredRepository = document.documentElement.dataset.repository ?? "";

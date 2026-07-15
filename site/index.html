@@ -5,14 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Porta turns any folder or local web server into a public HTTPS link. Free, account-free, and built for Windows and macOS."
+      content="Porta turns any folder or local web server into a public HTTPS link with a built-in or user-configured tunnel provider."
     />
     <meta name="theme-color" content="#f7f8fb" />
     <meta property="og:type" content="website" />
     <meta property="og:title" content="Porta — Share a folder. Get a link." />
     <meta
       property="og:description"
-      content="A free, UI-first Windows and macOS app for sharing folders and local web servers through public HTTPS links."
+      content="A free, UI-first Windows and macOS app for public HTTPS sharing through Cloudflare, ngrok, or your own tunnel CLI."
     />
     <meta property="og:image" content="__SITE_URL__/assets/og.png" />
     <meta property="og:image:width" content="1200" />
@@ -21,7 +21,7 @@
     <meta name="twitter:title" content="Porta — Share a folder. Get a link." />
     <meta
       name="twitter:description"
-      content="Free, account-free folder sharing for Windows and macOS."
+      content="Free folder sharing with a tunnel provider you control."
     />
     <meta name="twitter:image" content="__SITE_URL__/assets/og.png" />
     <link rel="canonical" href="__SITE_URL__/" />
@@ -35,7 +35,7 @@
 
     <div class="release-banner" role="status">
       <span class="release-dot" aria-hidden="true"></span>
-      Porta 1.1 is available for Windows and Apple silicon
+      Porta 1.2 adds configurable tunnel providers on Windows and Apple silicon
       <a href="#download">See the release</a>
     </div>
 
@@ -73,13 +73,14 @@
           <h1>Share a folder.<br /><span>Get a link.</span></h1>
           <p class="hero-lede">
             Porta gives any folder—or local web server—a public HTTPS link in
-            seconds. No account, no terminal, no Porta-hosted service.
+            seconds. Use the built-in account-free option or bring a tunnel
+            provider of your own—without a terminal or Porta-hosted service.
           </p>
 
           <div class="hero-actions">
             <a
               class="button button-primary"
-              href="https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/Porta_1.1.0_aarch64.dmg"
+              href="https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/Porta_1.2.0_aarch64.dmg"
               data-primary-download
             >
               <span class="button-mark" aria-hidden="true">↓</span>
@@ -98,9 +99,9 @@
           <p class="download-note" data-primary-note>Apple silicon · macOS · Free forever</p>
 
           <div class="hero-trust" aria-label="Product highlights">
-            <span><i aria-hidden="true">✓</i> No account</span>
+            <span><i aria-hidden="true">✓</i> Account-free default</span>
             <span><i aria-hidden="true">✓</i> No telemetry</span>
-            <span><i aria-hidden="true">✓</i> Password option</span>
+            <span><i aria-hidden="true">✓</i> Provider choice</span>
           </div>
         </div>
 
@@ -188,8 +189,8 @@
           <article class="step-card">
             <span class="step-number">02</span>
             <div class="step-icon switch-step" aria-hidden="true"><span></span></div>
-            <h3>Turn sharing on</h3>
-            <p>Add a password, hide the file list, or allow uploads when needed.</p>
+            <h3>Choose how it tunnels</h3>
+            <p>Keep the built-in default or select a saved provider for this share.</p>
           </article>
           <article class="step-card">
             <span class="step-number">03</span>
@@ -222,6 +223,23 @@
                 <div class="listing-row"><i class="mini-folder"></i><b>Final exports</b><span>Folder</span></div>
                 <div class="listing-row"><i class="mini-file"></i><b>Homepage.fig</b><span>18.4 MB</span></div>
                 <div class="listing-row"><i class="mini-file image-file"></i><b>Cover.png</b><span>2.1 MB</span></div>
+              </div>
+            </article>
+
+            <article class="feature feature-providers">
+              <div class="feature-copy">
+                <span class="feature-label">Provider choice</span>
+                <h3>Keep the easy default. Replace the tunnel anytime.</h3>
+                <p>
+                  Cloudflare Quick works out of the box. Add managed Cloudflare,
+                  ngrok, or a custom CLI in Settings, test it, make it the default,
+                  or override only one share.
+                </p>
+              </div>
+              <div class="provider-visual" aria-hidden="true">
+                <div class="provider-row active"><span class="provider-glyph">☁</span><div><b>Cloudflare Quick Tunnel</b><small>Built in · account-free</small></div><i>Default</i></div>
+                <div class="provider-row"><span class="provider-glyph">n</span><div><b>My ngrok</b><small>Executable + secure token</small></div><i>Ready</i></div>
+                <div class="provider-row"><span class="provider-glyph">›_</span><div><b>Custom command</b><small>Direct arguments · no shell</small></div><i>Ready</i></div>
               </div>
             </article>
 
@@ -261,7 +279,7 @@
 
       <section class="section shell install-section" id="install">
         <div class="section-heading centered-heading">
-          <p class="kicker">Install Porta 1.1</p>
+          <p class="kicker">Install Porta 1.2</p>
           <h2>Up and sharing in a minute.</h2>
           <p>Choose your platform and review its one-time trust prompt.</p>
         </div>
@@ -273,11 +291,11 @@
               <div><p class="kicker">Windows 10/11</p><h3>Install for your account.</h3></div>
             </div>
             <ol class="platform-steps">
-              <li><span>1</span><p>Download <b>Porta_1.1.0_x64-setup.exe</b> from the official release.</p></li>
+              <li><span>1</span><p>Download <b>Porta_1.2.0_x64-setup.exe</b> from the official release.</p></li>
               <li><span>2</span><p>Run it. If SmartScreen says <b>Windows protected your PC</b>, select <b>More info</b>.</p></li>
               <li><span>3</span><p>Confirm the file and checksum, then choose <b>Run anyway</b>. No administrator access is required.</p></li>
             </ol>
-            <a class="button button-primary platform-download" href="https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/Porta_1.1.0_x64-setup.exe" data-download-platform="windows">
+            <a class="button button-primary platform-download" href="https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/Porta_1.2.0_x64-setup.exe" data-download-platform="windows">
               <span class="button-mark" aria-hidden="true">↓</span> Download Windows setup
             </a>
           </article>
@@ -292,7 +310,7 @@
               <li><span>2</span><p>Try opening Porta once, then dismiss the unidentified-developer warning.</p></li>
               <li><span>3</span><p>Open <b>Privacy &amp; Security</b>, choose <b>Open Anyway</b>, then confirm.</p></li>
             </ol>
-            <a class="button button-secondary platform-download" href="https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/Porta_1.1.0_aarch64.dmg" data-download-platform="macos">
+            <a class="button button-secondary platform-download" href="https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/Porta_1.2.0_aarch64.dmg" data-download-platform="macos">
               <span class="button-mark" aria-hidden="true">↓</span> Download macOS DMG
             </a>
           </article>
@@ -319,15 +337,15 @@
               share while it is on. Use password protection for sensitive folders,
               disable uploads unless needed, and stop the share when you are done.
             </p>
-            <a href="https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/" target="_blank" rel="noreferrer">
-              About Cloudflare Quick Tunnels <span aria-hidden="true">↗</span>
+            <a href="https://github.com/__GITHUB_REPOSITORY__#tunnel-providers" target="_blank" rel="noreferrer">
+              Configure tunnel providers <span aria-hidden="true">↗</span>
             </a>
           </div>
           <div class="security-list">
             <article><span>01</span><div><h3>Your settings stay local</h3><p>No Porta account, hosted database, analytics, or telemetry.</p></div></article>
             <article><span>02</span><div><h3>Passwords use OS credentials</h3><p>Keychain or Credential Manager keeps plaintext credentials out of the share store.</p></div></article>
             <article><span>03</span><div><h3>Shared roots stay contained</h3><p>Traversal and escaping symlinks are rejected by the local server.</p></div></article>
-            <article><span>04</span><div><h3>Not production hosting</h3><p>Quick Tunnels have no SLA and remain subject to Cloudflare’s terms.</p></div></article>
+            <article><span>04</span><div><h3>Your provider’s rules apply</h3><p>Each tunnel service has its own limits, terms, and privacy practices.</p></div></article>
           </div>
         </div>
       </section>
@@ -338,14 +356,14 @@
             <div class="release-icon"><img src="assets/porta-icon.png" alt="Porta" width="84" height="84" /></div>
             <div>
               <p class="kicker">Official release</p>
-              <h2>Porta 1.1.0</h2>
+              <h2>Porta 1.2.0</h2>
               <p>Windows x64 + Apple silicon · free forever</p>
             </div>
           </div>
           <div class="release-actions">
             <a
               class="button button-primary"
-              href="https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/Porta_1.1.0_x64-setup.exe"
+              href="https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/Porta_1.2.0_x64-setup.exe"
               data-download-platform="windows"
             >
               <span class="button-mark" aria-hidden="true">↓</span>
@@ -353,7 +371,7 @@
             </a>
             <a
               class="button button-secondary"
-              href="https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/Porta_1.1.0_aarch64.dmg"
+              href="https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/Porta_1.2.0_aarch64.dmg"
               data-download-platform="macos"
             ><span class="button-mark" aria-hidden="true">↓</span> macOS DMG</a>
             <a
@@ -367,12 +385,12 @@
           <div class="checksum-list">
             <div class="checksum">
               <span>Windows SHA-256</span>
-              <code id="windows-checksum-value">e2443f5a1c2343dcb9fdda07f8dc800817a1ced38d670c510085f0cf3e45ba20</code>
+              <code id="windows-checksum-value">Published with the 1.2 release</code>
               <button type="button" data-copy-checksum="windows-checksum-value" aria-label="Copy Windows SHA-256 checksum">Copy</button>
             </div>
             <div class="checksum">
               <span>macOS SHA-256</span>
-              <code id="macos-checksum-value">330bbc2c5165d3fdcd89e37d1bb536610ad6a060ff817cd5c417f086c48d9d32</code>
+              <code id="macos-checksum-value">Published with the 1.2 release</code>
               <button type="button" data-copy-checksum="macos-checksum-value" aria-label="Copy macOS SHA-256 checksum">Copy</button>
             </div>
           </div>
@@ -389,8 +407,16 @@
             <summary>Does Porta upload my files somewhere?</summary>
             <p>
               No Porta storage service exists. While a share is live, files travel
-              from your computer through Cloudflare’s tunnel to people using the link.
-              Stop the share and that temporary URL stops serving your folder.
+              from your computer through your selected tunnel provider to people using
+              the link. Stop the share and that tunnel stops serving your folder.
+            </p>
+          </details>
+          <details>
+            <summary>What tunnel providers can I use?</summary>
+            <p>
+              Cloudflare Quick is built in and needs no account. You can also configure
+              a managed Cloudflare tunnel, ngrok, or a compatible custom CLI. Tokens stay
+              in Keychain or Credential Manager, and custom arguments run without a shell.
             </p>
           </details>
           <details>
@@ -412,8 +438,8 @@
             <summary>Can I share a local development server?</summary>
             <p>
               Yes. Add a port share—for example localhost:3000—and Porta tunnels it
-              directly. Cloudflare Quick Tunnels do not support Server-Sent Events and
-              are intended for testing, not production hosting.
+              directly. Features and production suitability depend on the selected
+              provider; Cloudflare Quick remains intended for testing, not production hosting.
             </p>
           </details>
         </div>
@@ -425,7 +451,7 @@
           <div><p>One folder. One switch. One link.</p><h2>Open the door with Porta.</h2></div>
           <a
             class="button button-white"
-            href="https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/Porta_1.1.0_aarch64.dmg"
+            href="https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/Porta_1.2.0_aarch64.dmg"
             data-primary-download
           ><span data-primary-label>Download for macOS</span></a>
         </div>
@@ -435,7 +461,7 @@
     <footer class="footer">
       <div class="shell footer-inner">
         <a class="brand footer-brand" href="#top"><img src="assets/porta-icon.png" alt="" width="32" height="32" /><span>Porta</span></a>
-        <p>Free, account-free folder sharing for Windows and macOS.</p>
+        <p>Free folder sharing with a tunnel provider you control.</p>
         <div class="footer-links">
           <a href="https://github.com/__GITHUB_REPOSITORY__" data-repo-link target="_blank" rel="noreferrer">Source</a>
           <a href="https://github.com/__GITHUB_REPOSITORY__/releases/latest" data-release-page target="_blank" rel="noreferrer">Releases</a>
@@ -453,9 +479,9 @@
     </footer>
 
     <div class="mobile-download">
-      <div><strong>Porta 1.1</strong><span data-primary-note>Apple silicon · macOS</span></div>
+      <div><strong>Porta 1.2</strong><span data-primary-note>Apple silicon · macOS</span></div>
       <a
-        href="https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/Porta_1.1.0_aarch64.dmg"
+        href="https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/Porta_1.2.0_aarch64.dmg"
         data-primary-download
       >Download</a>
     </div>

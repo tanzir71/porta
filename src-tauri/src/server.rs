@@ -10,7 +10,7 @@ use axum::{
     extract::{DefaultBodyLimit, FromRequest, Multipart, State},
     http::{
         header::{AUTHORIZATION, ETAG, IF_NONE_MATCH, WWW_AUTHENTICATE},
-        HeaderValue, Method, Request, StatusCode,
+        HeaderMap, HeaderValue, Method, Request, StatusCode,
     },
     middleware::{self, Next},
     response::{Html, IntoResponse, Redirect, Response},
@@ -52,6 +52,8 @@ pub struct FileServerConfig {
     allow_uploads: bool,
     password: Option<String>,
     stats: Option<Arc<StatsReporter>>,
+    bind_port: Option<u16>,
+    visitor_headers: Vec<String>,
 }
 
 impl FileServerConfig {
@@ -64,6 +66,12 @@ impl FileServerConfig {
             allow_uploads: false,
             password: None,
             stats: None,
+            bind_port: None,
+            visitor_headers: vec![
+                "cf-connecting-ip".to_owned(),
+                "x-forwarded-for".to_owned(),
+                "x-real-ip".to_owned(),
+            ],
         }
     }
 
@@ -107,6 +115,18 @@ impl FileServerConfig {
         self.stats = Some(stats);
         self
     }
+
+    /// Uses a stable loopback port when a configured provider routes to one fixed origin.
+    pub fn bind_port(mut self, port: Option<u16>) -> Self {
+        self.bind_port = port;
+        self
+    }
+
+    /// Orders the trusted provider headers Porta uses to identify unique visitors.
+    pub fn visitor_headers(mut self, headers: Vec<String>) -> Self {
+        self.visitor_headers = headers;
+        self
+    }
 }
 
 #[derive(Clone)]
@@ -120,6 +140,12 @@ struct ListingState {
 #[derive(Clone)]
 struct AuthState {
     password: Option<Arc<str>>,
+}
+
+#[derive(Clone)]
+struct StatsState {
+    reporter: Arc<StatsReporter>,
+    visitor_headers: Arc<[String]>,
 }
 
 struct DirectoryEntry {
@@ -150,9 +176,17 @@ impl FileServer {
             return Err("Choose a folder instead of a file, then try again.".to_owned());
         }
 
-        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        let listener = tokio::net::TcpListener::bind((
+            Ipv4Addr::LOCALHOST,
+            config.bind_port.unwrap_or(0),
+        ))
             .await
-            .map_err(|_| START_ERROR.to_owned())?;
+            .map_err(|_| match config.bind_port {
+                Some(port) => format!(
+                    "Porta couldn't use local port {port}. Stop the app using it or choose another provider port, then try again."
+                ),
+                None => START_ERROR.to_owned(),
+            })?;
         let address = listener.local_addr().map_err(|_| START_ERROR.to_owned())?;
         let listing_state = ListingState {
             root: root.clone(),
@@ -178,7 +212,13 @@ impl FileServer {
             .layer(middleware::from_fn_with_state(root, enforce_shared_root))
             .layer(DefaultBodyLimit::disable());
         if let Some(reporter) = stats.clone() {
-            app = app.layer(middleware::from_fn_with_state(reporter, record_stats));
+            app = app.layer(middleware::from_fn_with_state(
+                StatsState {
+                    reporter,
+                    visitor_headers: config.visitor_headers.into(),
+                },
+                record_stats,
+            ));
         }
         let (shutdown, shutdown_signal) = oneshot::channel();
         let task = tokio::spawn(async move {
@@ -197,7 +237,7 @@ impl FileServer {
         })
     }
 
-    /// Returns the loopback address cloudflared should connect to.
+    /// Returns the loopback address the selected tunnel provider should connect to.
     pub fn address(&self) -> SocketAddr {
         self.address
     }
@@ -236,25 +276,37 @@ impl Drop for FileServer {
 }
 
 async fn record_stats(
-    State(stats): State<Arc<StatsReporter>>,
+    State(stats): State<StatsState>,
     request: Request<Body>,
     next: Next,
 ) -> Response {
-    let visitor = request
-        .headers()
-        .get("cf-connecting-ip")
-        .and_then(|value| value.to_str().ok());
-    stats.record_request(visitor);
+    let visitor = visitor_address(request.headers(), &stats.visitor_headers);
+    stats.reporter.record_request(visitor.as_deref());
 
     let response = next.run(request).await;
     let (parts, body) = response.into_parts();
-    let byte_counter = Arc::clone(&stats);
+    let byte_counter = Arc::clone(&stats.reporter);
     let body = Body::from_stream(body.into_data_stream().inspect(move |chunk| {
         if let Ok(bytes) = chunk {
             byte_counter.record_bytes(bytes.len());
         }
     }));
     Response::from_parts(parts, body)
+}
+
+fn visitor_address(headers: &HeaderMap, trusted_headers: &[String]) -> Option<String> {
+    trusted_headers.iter().find_map(|name| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| {
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .find(|candidate| candidate.parse::<std::net::IpAddr>().is_ok())
+            })
+            .map(str::to_owned)
+    })
 }
 
 async fn enforce_shared_root(
@@ -1025,7 +1077,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn counts_requests_streamed_bytes_and_unique_cloudflare_visitors() {
+    async fn counts_requests_streamed_bytes_and_normalized_provider_visitors() {
         let root = tempdir().expect("temporary folder should be created");
         tokio::fs::write(root.path().join("payload.bin"), b"abcdefghij")
             .await
@@ -1062,16 +1114,23 @@ mod tests {
             &[("Cf-Connecting-Ip", "2001:db8::20")],
         )
         .await;
+        let forwarded_visitor = request(
+            server.address(),
+            "/payload.bin",
+            &[("X-Forwarded-For", "unknown, 198.51.100.42, 10.0.0.1")],
+        )
+        .await;
 
         assert_eq!(first.body.len(), 10);
         assert_eq!(range.body.len(), 4);
         assert_eq!(second_visitor.body.len(), 10);
+        assert_eq!(forwarded_visitor.body.len(), 10);
         assert_eq!(
             reporter.snapshot(),
             ShareStats {
-                visitors: 2,
-                requests: 3,
-                bytes_served: 24,
+                visitors: 3,
+                requests: 4,
+                bytes_served: 34,
             }
         );
         assert_eq!(first_visitor_calls.load(Ordering::Relaxed), 1);

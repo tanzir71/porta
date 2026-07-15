@@ -15,7 +15,7 @@ env:
   CARGO_TERM_COLOR: always
   CLOUDFLARED_VERSION: "2026.7.1"
   CLOUDFLARED_WINDOWS_SHA256: "ccb0756de288d3c2c076d19764ca53e0849a10f2dd9c23f8656ac42bdeb45001"
-  RELEASE_VERSION: "1.1.0"
+  RELEASE_VERSION: "1.2.0"
 
 jobs:
   build-and-smoke-test:
@@ -26,6 +26,16 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+
+      - name: Validate release metadata
+        shell: pwsh
+        run: |
+          $config = Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json
+          $ui = Get-Content ui/package.json | ConvertFrom-Json
+          $cargo = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version = "([^"]+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          if ($config.version -ne $env:RELEASE_VERSION) { throw "Tauri version does not match RELEASE_VERSION" }
+          if ($ui.version -ne $env:RELEASE_VERSION) { throw "UI version does not match RELEASE_VERSION" }
+          if ($cargo -ne $env:RELEASE_VERSION) { throw "Cargo version does not match RELEASE_VERSION" }
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
