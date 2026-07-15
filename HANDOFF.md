@@ -144,7 +144,7 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 - [x] `npm install && npm run build` succeeds in `ui/`
 - [x] `cargo tauri dev` launches showing the React UI (mock data OK at this stage)
 - [x] cloudflared universal binaries fetched into `src-tauri/binaries/` + configured as sidecar with shell-scope permission
-- [ ] Verify: `cargo tauri dev` renders EmptyState or mock cards with no console errors
+- [x] Verify: `cargo tauri dev` renders EmptyState or mock cards with no console errors
 
 ### M1 — Share store + CRUD (no tunnel yet)
 - [ ] `Share`/`Settings` structs mirror `ipc.ts` exactly (camelCase serde); unit test deserializes a TS-shaped JSON fixture
