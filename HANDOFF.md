@@ -167,7 +167,7 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 - [x] `stop_share` tears down child processes — zero orphan `cloudflared` after quit (verify `pgrep cloudflared`)
 - [x] Crash supervision with backoff per §3; 3 strikes → `error` + friendly message
 - [x] No-internet path: unreachable → `error` "Couldn't reach Cloudflare — check your internet connection and try again."
-- [ ] Port shares (`kind:"port"`) tunnel directly to the user's port
+- [x] Port shares (`kind:"port"`) tunnel directly to the user's port
 - [ ] `copyUrlOnStart` honored
 - [ ] Verify: toggle a real folder share; open the trycloudflare URL from a phone; download a file
 

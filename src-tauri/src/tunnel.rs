@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     io,
-    net::SocketAddr,
+    net::{Ipv4Addr, SocketAddr},
     sync::{
         atomic::{AtomicU64, Ordering},
         LazyLock,
@@ -19,7 +19,7 @@ use tokio::sync::Mutex;
 
 use crate::{
     server::{FileServer, FileServerConfig},
-    shares::{AppEvent, Share, ShareStatus},
+    shares::{AppEvent, Share, ShareKind, ShareStatus},
     store::Store,
 };
 
@@ -35,6 +35,8 @@ const SIDECAR_START_ERROR: &str =
 const CLOUDFLARE_ERROR: &str =
     "Couldn't reach Cloudflare — check your internet connection and try again.";
 const MISSING_SHARE: &str = "That share no longer exists. Return to the main window and try again.";
+const MISSING_PORT: &str =
+    "This port share has no port. Edit the share and enter one from 1 to 65535.";
 const STOP_ERROR: &str =
     "Porta couldn't stop this share cleanly. Quit Porta, then check Activity Monitor for cloudflared.";
 const UNSTABLE_TUNNEL_ERROR: &str =
@@ -54,7 +56,7 @@ struct TunnelState {
 
 struct TunnelSession {
     generation: u64,
-    server: FileServer,
+    server: Option<FileServer>,
     child: Option<CommandChild>,
 }
 
@@ -99,26 +101,20 @@ impl TunnelManager {
             state.pending.insert(share.id.clone());
         }
 
-        let config = match FileServerConfig::for_share(&share) {
-            Ok(config) => config,
+        let (origin, server) = match start_local_origin(&share).await {
+            Ok(started) => started,
             Err(error) => {
                 self.release_pending(&share.id).await;
                 return Err(error);
             }
         };
-        let server = match FileServer::start(config).await {
-            Ok(server) => server,
-            Err(error) => {
-                self.release_pending(&share.id).await;
-                return Err(error);
-            }
-        };
-        let origin = server.address();
         let (receiver, child) = match spawn_cloudflared(app, origin) {
             Ok(process) => process,
             Err(error) => {
                 self.release_pending(&share.id).await;
-                let _ = server.stop().await;
+                if let Some(server) = server {
+                    let _ = server.stop().await;
+                }
                 return Err(error);
             }
         };
@@ -227,6 +223,19 @@ fn cloudflared_args(origin: SocketAddr) -> Vec<String> {
         format!("http://{origin}"),
         "--no-autoupdate".to_owned(),
     ]
+}
+
+async fn start_local_origin(share: &Share) -> Result<(SocketAddr, Option<FileServer>), String> {
+    match share.kind {
+        ShareKind::Folder => {
+            let server = FileServer::start(FileServerConfig::for_share(share)?).await?;
+            Ok((server.address(), Some(server)))
+        }
+        ShareKind::Port => {
+            let port = share.port.ok_or_else(|| MISSING_PORT.to_owned())?;
+            Ok((SocketAddr::from((Ipv4Addr::LOCALHOST, port)), None))
+        }
+    }
 }
 
 fn spawn_cloudflared<R: Runtime>(
@@ -375,10 +384,18 @@ async fn shutdown_session(session: TunnelSession) -> Result<(), String> {
                 None => true,
             }
         },
-        tokio::time::timeout(GRACEFUL_STOP_TIMEOUT, server.stop())
+        async move {
+            match server {
+                Some(server) => matches!(
+                    tokio::time::timeout(GRACEFUL_STOP_TIMEOUT, server.stop()).await,
+                    Ok(Ok(()))
+                ),
+                None => true,
+            }
+        }
     );
 
-    if process_stopped && matches!(server_stopped, Ok(Ok(()))) {
+    if process_stopped && server_stopped {
         Ok(())
     } else {
         Err(STOP_ERROR.to_owned())
@@ -528,9 +545,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        cloudflared_args, retry_delay, send_signal, supervise_tunnel, transition_share,
-        wait_for_process_end, wait_for_process_exit, wait_for_tunnel_url, RetryState,
-        CLOUDFLARE_ERROR, UNSTABLE_TUNNEL_ERROR, URL_TIMEOUT,
+        cloudflared_args, retry_delay, send_signal, start_local_origin, supervise_tunnel,
+        transition_share, wait_for_process_end, wait_for_process_exit, wait_for_tunnel_url,
+        RetryState, CLOUDFLARE_ERROR, UNSTABLE_TUNNEL_ERROR, URL_TIMEOUT,
     };
     use crate::{
         server::{FileServer, FileServerConfig},
@@ -582,6 +599,40 @@ mod tests {
         )
         .await
         .expect("supervisor should continue through the later crash event");
+    }
+
+    #[tokio::test]
+    async fn port_shares_use_the_users_loopback_port_without_an_axum_server() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/ipc_contract.json"))
+                .expect("fixture should contain JSON");
+        let mut share: crate::shares::Share = serde_json::from_value(fixture["share"].clone())
+            .expect("fixture share should deserialize");
+        share.kind = crate::shares::ShareKind::Port;
+        share.path = None;
+        share.port = Some(4173);
+
+        let (origin, server) = start_local_origin(&share)
+            .await
+            .expect("port origin should be created");
+
+        assert_eq!(origin, "127.0.0.1:4173".parse().expect("address is valid"));
+        assert!(server.is_none());
+        assert_eq!(
+            cloudflared_args(origin),
+            [
+                "tunnel",
+                "--url",
+                "http://127.0.0.1:4173",
+                "--no-autoupdate"
+            ]
+        );
+
+        share.port = None;
+        assert_eq!(
+            start_local_origin(&share).await.err().as_deref(),
+            Some("This port share has no port. Edit the share and enter one from 1 to 65535.")
+        );
     }
 
     #[test]
@@ -676,7 +727,7 @@ mod tests {
                 share_id.clone(),
                 super::TunnelSession {
                     generation: 1,
-                    server,
+                    server: Some(server),
                     child: Some(child),
                 },
             );
@@ -761,7 +812,7 @@ mod tests {
             "teardown".to_owned(),
             super::TunnelSession {
                 generation: 1,
-                server,
+                server: Some(server),
                 child: Some(child),
             },
         );
@@ -791,7 +842,7 @@ mod tests {
             "quit".to_owned(),
             super::TunnelSession {
                 generation: 2,
-                server: quit_server,
+                server: Some(quit_server),
                 child: Some(quit_child),
             },
         );
