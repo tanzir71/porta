@@ -1,5 +1,6 @@
 mod commands;
 mod credentials;
+mod drag_drop;
 pub mod server;
 pub mod settings;
 pub mod shares;
@@ -41,6 +42,7 @@ pub fn run() {
                 let _ = window.hide();
             }
         })
+        .on_webview_event(drag_drop::handle)
         .invoke_handler(tauri::generate_handler![
             commands::list_shares,
             commands::create_share,
