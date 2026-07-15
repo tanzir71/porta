@@ -187,7 +187,7 @@ Check boxes (`[x]`) as criteria pass. Work strictly top-to-bottom.
 - [~] Verify: log out/in → Porta running in menu bar, auto-start shares live, links work
 
 ### M6 — Polish & hardening
-- [ ] All error strings audited against §6.2 (no `Error:`, no paths-only, always an action)
+- [x] All error strings audited against §6.2 (no `Error:`, no paths-only, always an action)
 - [ ] Share names sanitized in listing.html (HTML-escape everything server-rendered)
 - [ ] App icon (folder+beam motif matching `Logo` in `Icons.tsx`), 1024px master, iconset generated
 - [ ] `cargo tauri build` produces signed-or-ad-hoc .dmg that launches on a clean machine

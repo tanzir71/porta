@@ -1,6 +1,8 @@
 mod commands;
 mod credentials;
 mod drag_drop;
+#[cfg(test)]
+mod error_audit;
 pub mod server;
 pub mod settings;
 pub mod shares;
@@ -60,5 +62,10 @@ pub fn run() {
             commands::update_settings,
         ])
         .run(tauri::generate_context!())
-        .expect("Porta could not start");
+        .unwrap_or_else(|_| {
+            eprintln!(
+                "Porta couldn't start. Quit and reopen Porta. If it still won't open, reinstall Porta."
+            );
+            std::process::exit(1);
+        });
 }
