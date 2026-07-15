@@ -1015,6 +1015,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn escapes_hostile_share_names_in_every_template_context() {
+        let root = tempdir().expect("temporary folder should be created");
+        let hostile_name = r#"--></title><script>alert("x" & 'y')</script><!--"#;
+        let escaped_name =
+            "--&gt;&lt;/title&gt;&lt;script&gt;alert(&quot;x&quot; &amp; &#39;y&#39;)&lt;/script&gt;&lt;!--";
+        let server = FileServer::start(FileServerConfig::new(root.path(), hostile_name))
+            .await
+            .expect("listing server should start");
+
+        let listing = request(server.address(), "/", &[]).await;
+        assert_eq!(listing.status, 200);
+        let html = String::from_utf8(listing.body).expect("listing should contain UTF-8 HTML");
+        assert_eq!(html.matches(escaped_name).count(), 3);
+        assert!(html.contains(&format!("<title>{escaped_name}</title>")));
+        assert!(html.contains(&format!("<h1>{escaped_name}</h1>")));
+        assert!(!html.contains("</title><script>alert"));
+        assert!(!html.contains("<script>alert(\"x\""));
+
+        server.stop().await.expect("listing server should stop");
+    }
+
+    #[tokio::test]
     async fn disabled_listing_serves_only_a_root_index_or_direct_files() {
         let site_root = tempdir().expect("site folder should be created");
         tokio::fs::write(
