@@ -4,7 +4,7 @@ use std::{
     net::{Ipv4Addr, SocketAddr},
     sync::{
         atomic::{AtomicU64, Ordering},
-        LazyLock,
+        Arc, LazyLock,
     },
     time::Duration,
 };
@@ -21,6 +21,7 @@ use tokio::sync::Mutex;
 use crate::{
     server::{FileServer, FileServerConfig},
     shares::{AppEvent, Share, ShareKind, ShareStatus},
+    stats::{ShareStats, StatsReporter},
     store::Store,
 };
 
@@ -102,7 +103,7 @@ impl TunnelManager {
             state.pending.insert(share.id.clone());
         }
 
-        let (origin, server) = match start_local_origin(&share).await {
+        let (origin, server) = match start_local_origin(app, &share).await {
             Ok(started) => started,
             Err(error) => {
                 self.release_pending(&share.id).await;
@@ -226,10 +227,15 @@ fn cloudflared_args(origin: SocketAddr) -> Vec<String> {
     ]
 }
 
-async fn start_local_origin(share: &Share) -> Result<(SocketAddr, Option<FileServer>), String> {
+async fn start_local_origin<R: Runtime>(
+    app: &AppHandle<R>,
+    share: &Share,
+) -> Result<(SocketAddr, Option<FileServer>), String> {
     match share.kind {
         ShareKind::Folder => {
-            let server = FileServer::start(FileServerConfig::for_share(share)?).await?;
+            let reporter = stats_reporter(app, share.id.clone());
+            let server =
+                FileServer::start(FileServerConfig::for_share(share)?.stats(reporter)).await?;
             Ok((server.address(), Some(server)))
         }
         ShareKind::Port => {
@@ -237,6 +243,30 @@ async fn start_local_origin(share: &Share) -> Result<(SocketAddr, Option<FileSer
             Ok((SocketAddr::from((Ipv4Addr::LOCALHOST, port)), None))
         }
     }
+}
+
+fn stats_reporter<R: Runtime>(app: &AppHandle<R>, share_id: String) -> Arc<StatsReporter> {
+    let app = app.clone();
+    StatsReporter::new(move |stats| {
+        let store = app.state::<Store>();
+        let saved = store.update(|shares, _| {
+            let share = shares
+                .iter_mut()
+                .find(|share| share.id == share_id)
+                .ok_or_else(|| MISSING_SHARE.to_owned())?;
+            share.stats = stats;
+            Ok(())
+        });
+        if saved.is_ok() {
+            let _ = app.emit(
+                "app_event",
+                AppEvent::StatsUpdated {
+                    id: share_id.clone(),
+                    stats,
+                },
+            );
+        }
+    })
 }
 
 fn spawn_cloudflared<R: Runtime>(
@@ -525,6 +555,9 @@ pub(crate) fn transition_share<R: Runtime>(
         share.status = status;
         share.url = url;
         share.error = error;
+        if status == ShareStatus::Starting {
+            share.stats = ShareStats::default();
+        }
         Ok(share.clone())
     })?;
     let clipboard_url = store
@@ -557,9 +590,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        cloudflared_args, retry_delay, send_signal, start_local_origin, supervise_tunnel,
-        transition_share, url_to_copy, wait_for_process_end, wait_for_process_exit,
-        wait_for_tunnel_url, RetryState, CLOUDFLARE_ERROR, UNSTABLE_TUNNEL_ERROR, URL_TIMEOUT,
+        cloudflared_args, retry_delay, send_signal, start_local_origin, stats_reporter,
+        supervise_tunnel, transition_share, url_to_copy, wait_for_process_end,
+        wait_for_process_exit, wait_for_tunnel_url, RetryState, CLOUDFLARE_ERROR,
+        UNSTABLE_TUNNEL_ERROR, URL_TIMEOUT,
     };
     use crate::{
         server::{FileServer, FileServerConfig},
@@ -615,6 +649,9 @@ mod tests {
 
     #[tokio::test]
     async fn port_shares_use_the_users_loopback_port_without_an_axum_server() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app should build");
         let fixture: serde_json::Value =
             serde_json::from_str(include_str!("../tests/fixtures/ipc_contract.json"))
                 .expect("fixture should contain JSON");
@@ -624,7 +661,7 @@ mod tests {
         share.path = None;
         share.port = Some(4173);
 
-        let (origin, server) = start_local_origin(&share)
+        let (origin, server) = start_local_origin(app.handle(), &share)
             .await
             .expect("port origin should be created");
 
@@ -642,7 +679,10 @@ mod tests {
 
         share.port = None;
         assert_eq!(
-            start_local_origin(&share).await.err().as_deref(),
+            start_local_origin(app.handle(), &share)
+                .await
+                .err()
+                .as_deref(),
             Some("This port share has no port. Edit the share and enter one from 1 to 65535.")
         );
     }
@@ -697,6 +737,70 @@ mod tests {
         share.status = ShareStatus::Live;
         share.url = None;
         assert_eq!(url_to_copy(&share, true), None);
+    }
+
+    #[tokio::test]
+    async fn coalesces_stats_ticks_and_persists_the_latest_snapshot() {
+        let data_dir = tempdir().expect("temporary store should be created");
+        let store = Store::load_from_dir(data_dir.path()).expect("test store should load");
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/ipc_contract.json"))
+                .expect("fixture should contain JSON");
+        let share: crate::shares::Share = serde_json::from_value(fixture["share"].clone())
+            .expect("fixture share should deserialize");
+        let id = share.id.clone();
+        store
+            .update(|shares, _| {
+                shares.push(share);
+                Ok(())
+            })
+            .expect("fixture share should persist");
+        let app = tauri::test::mock_builder()
+            .manage(store)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app should build");
+        let (sender, receiver) = mpsc::channel();
+        app.listen("app_event", move |event| {
+            sender
+                .send(event.payload().to_owned())
+                .expect("event should be captured");
+        });
+        let reporter = stats_reporter(app.handle(), id.clone());
+
+        reporter.record_request(Some("203.0.113.1"));
+        reporter.record_request(Some("203.0.113.1"));
+        reporter.record_request(Some("2001:db8::2"));
+        reporter.record_bytes(4096);
+        reporter.record_bytes(512);
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+
+        let event: crate::shares::AppEvent = serde_json::from_str(
+            &receiver
+                .try_recv()
+                .expect("one coalesced stats event should arrive"),
+        )
+        .expect("stats event should deserialize");
+        assert!(matches!(
+            event,
+            crate::shares::AppEvent::StatsUpdated { id: event_id, stats }
+                if event_id == id
+                    && stats.visitors == 2
+                    && stats.requests == 3
+                    && stats.bytes_served == 4608
+        ));
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+
+        let stored = app
+            .state::<Store>()
+            .read(|shares, _| shares[0].stats)
+            .expect("stats should remain readable");
+        assert_eq!(stored.visitors, 2);
+        assert_eq!(stored.requests, 3);
+        assert_eq!(stored.bytes_served, 4608);
+        reporter.deactivate();
     }
 
     #[tokio::test]
@@ -944,7 +1048,9 @@ mod tests {
         assert!(matches!(
             starting,
             crate::shares::AppEvent::ShareChanged { share }
-                if share.status == ShareStatus::Starting && share.url.is_none()
+                if share.status == ShareStatus::Starting
+                    && share.url.is_none()
+                    && share.stats == crate::stats::ShareStats::default()
         ));
         assert!(matches!(
             live,
@@ -959,6 +1065,7 @@ mod tests {
             .read(|shares, _| shares[0].clone())
             .expect("live share should remain readable");
         assert_eq!(stored.status, ShareStatus::Live);
+        assert_eq!(stored.stats, crate::stats::ShareStats::default());
         assert_eq!(
             stored.url.as_deref(),
             Some("https://quiet-harbor.trycloudflare.com")

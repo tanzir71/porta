@@ -18,12 +18,13 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use chrono::{DateTime, Local};
+use futures_util::StreamExt;
 use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
 use subtle::ConstantTimeEq;
 use tokio::{io::AsyncWriteExt, sync::oneshot, task::JoinHandle};
 use tower_http::services::ServeDir;
 
-use crate::{credentials, shares::Share};
+use crate::{credentials, shares::Share, stats::StatsReporter};
 
 const INVALID_FOLDER: &str = "This folder was moved or deleted. Pick it again to reshare.";
 const START_ERROR: &str =
@@ -44,6 +45,7 @@ pub struct FileServerConfig {
     show_listing: bool,
     allow_uploads: bool,
     password: Option<String>,
+    stats: Option<Arc<StatsReporter>>,
 }
 
 impl FileServerConfig {
@@ -55,6 +57,7 @@ impl FileServerConfig {
             show_listing: true,
             allow_uploads: false,
             password: None,
+            stats: None,
         }
     }
 
@@ -92,6 +95,12 @@ impl FileServerConfig {
         self.password = password;
         self
     }
+
+    /// Records requests and streamed response bytes for this server session.
+    pub fn stats(mut self, stats: Arc<StatsReporter>) -> Self {
+        self.stats = Some(stats);
+        self
+    }
 }
 
 #[derive(Clone)]
@@ -119,6 +128,7 @@ pub struct FileServer {
     address: SocketAddr,
     shutdown: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<std::io::Result<()>>>,
+    stats: Option<Arc<StatsReporter>>,
 }
 
 impl FileServer {
@@ -147,7 +157,8 @@ impl FileServer {
         let auth_state = AuthState {
             password: config.password.map(Arc::from),
         };
-        let app = Router::new()
+        let stats = config.stats.clone();
+        let mut app = Router::new()
             .fallback_service(ServeDir::new(&root))
             .layer(middleware::from_fn_with_state(
                 listing_state,
@@ -160,6 +171,9 @@ impl FileServer {
             ))
             .layer(middleware::from_fn_with_state(root, enforce_shared_root))
             .layer(DefaultBodyLimit::disable());
+        if let Some(reporter) = stats.clone() {
+            app = app.layer(middleware::from_fn_with_state(reporter, record_stats));
+        }
         let (shutdown, shutdown_signal) = oneshot::channel();
         let task = tokio::spawn(async move {
             axum::serve(listener, app)
@@ -173,6 +187,7 @@ impl FileServer {
             address,
             shutdown: Some(shutdown),
             task: Some(task),
+            stats,
         })
     }
 
@@ -183,6 +198,9 @@ impl FileServer {
 
     /// Stops accepting requests and waits for active requests to finish.
     pub async fn stop(mut self) -> Result<(), String> {
+        if let Some(stats) = self.stats.take() {
+            stats.deactivate();
+        }
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
         }
@@ -199,6 +217,9 @@ impl FileServer {
 
 impl Drop for FileServer {
     fn drop(&mut self) {
+        if let Some(stats) = self.stats.take() {
+            stats.deactivate();
+        }
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
         }
@@ -206,6 +227,28 @@ impl Drop for FileServer {
             task.abort();
         }
     }
+}
+
+async fn record_stats(
+    State(stats): State<Arc<StatsReporter>>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let visitor = request
+        .headers()
+        .get("cf-connecting-ip")
+        .and_then(|value| value.to_str().ok());
+    stats.record_request(visitor);
+
+    let response = next.run(request).await;
+    let (parts, body) = response.into_parts();
+    let byte_counter = Arc::clone(&stats);
+    let body = Body::from_stream(body.into_data_stream().inspect(move |chunk| {
+        if let Ok(bytes) = chunk {
+            byte_counter.record_bytes(bytes.len());
+        }
+    }));
+    Response::from_parts(parts, body)
 }
 
 async fn enforce_shared_root(
@@ -704,13 +747,14 @@ async fn resolve_request_path(root: &Path, request_path: &str) -> Option<PathBuf
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, net::SocketAddr};
+    use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
     use base64::Engine as _;
     use tempfile::tempdir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::{checked_upload_size, FileServer, FileServerConfig, MAX_UPLOAD_BYTES};
+    use crate::stats::{ShareStats, StatsReporter};
 
     struct HttpResponse {
         status: u16,
@@ -847,6 +891,53 @@ mod tests {
 
         first.stop().await.expect("first server should stop");
         second.stop().await.expect("second server should stop");
+    }
+
+    #[tokio::test]
+    async fn counts_requests_streamed_bytes_and_unique_cloudflare_visitors() {
+        let root = tempdir().expect("temporary folder should be created");
+        tokio::fs::write(root.path().join("payload.bin"), b"abcdefghij")
+            .await
+            .expect("payload should be written");
+        let reporter = StatsReporter::new(|_| {});
+        let server = FileServer::start(
+            FileServerConfig::new(root.path(), "Stats").stats(Arc::clone(&reporter)),
+        )
+        .await
+        .expect("stats server should start");
+
+        let first = request(
+            server.address(),
+            "/payload.bin",
+            &[("Cf-Connecting-Ip", "203.0.113.10")],
+        )
+        .await;
+        let range = request(
+            server.address(),
+            "/payload.bin",
+            &[("Cf-Connecting-Ip", "203.0.113.10"), ("Range", "bytes=2-5")],
+        )
+        .await;
+        let second_visitor = request(
+            server.address(),
+            "/payload.bin",
+            &[("Cf-Connecting-Ip", "2001:db8::20")],
+        )
+        .await;
+
+        assert_eq!(first.body.len(), 10);
+        assert_eq!(range.body.len(), 4);
+        assert_eq!(second_visitor.body.len(), 10);
+        assert_eq!(
+            reporter.snapshot(),
+            ShareStats {
+                visitors: 2,
+                requests: 3,
+                bytes_served: 24,
+            }
+        );
+
+        server.stop().await.expect("stats server should stop");
     }
 
     #[tokio::test]

@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "multipart", "tokio"] }
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+futures-util = "0.3"
 keyring = "4.1"
 libc = "0.2"
 percent-encoding = "2"
