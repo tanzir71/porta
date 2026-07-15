@@ -1,0 +1,398 @@
+use std::path::{Path, PathBuf};
+
+use chrono::{SecondsFormat, Utc};
+use tauri::{AppHandle, State};
+use tauri_plugin_autostart::ManagerExt;
+use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_opener::OpenerExt;
+use url::Url;
+use uuid::Uuid;
+
+use crate::{
+    credentials,
+    settings::{Settings, SettingsPatch},
+    shares::{CreateShareInput, Share, ShareKind, ShareStatus, UpdateShareInput},
+    stats::ShareStats,
+    store::Store,
+};
+
+const MISSING_SHARE: &str = "That share no longer exists. Return to the main window and try again.";
+const FOLDER_MISSING: &str = "This folder was moved or deleted. Pick it again to reshare.";
+
+#[tauri::command]
+pub(crate) fn list_shares(store: State<'_, Store>) -> Result<Vec<Share>, String> {
+    store.read(|shares, _| shares.to_vec())
+}
+
+#[tauri::command]
+pub(crate) fn create_share(
+    store: State<'_, Store>,
+    input: CreateShareInput,
+) -> Result<Share, String> {
+    let share = build_share(&input)?;
+    let password = input.password.as_deref();
+
+    if let Some(password) = password {
+        credentials::replace_password(&share.id, Some(password))?;
+    }
+
+    let save_result = store.update(|shares, _| {
+        shares.insert(0, share.clone());
+        Ok(share.clone())
+    });
+
+    if save_result.is_err() && password.is_some() {
+        let _ = credentials::replace_password(&share.id, None);
+    }
+
+    save_result
+}
+
+#[tauri::command]
+pub(crate) fn update_share(
+    store: State<'_, Store>,
+    id: String,
+    patch: UpdateShareInput,
+) -> Result<Share, String> {
+    let password_change = patch.password.clone();
+    let previous_password = if password_change.is_some() {
+        credentials::get_password(&id)?
+    } else {
+        None
+    };
+
+    if let Some(password) = password_change.as_ref() {
+        validate_password(password.as_deref())?;
+        credentials::replace_password(&id, password.as_deref())?;
+    }
+
+    let save_result = store.update(|shares, _| {
+        let share = shares
+            .iter_mut()
+            .find(|share| share.id == id)
+            .ok_or_else(|| MISSING_SHARE.to_owned())?;
+        apply_share_patch(share, &patch)?;
+        Ok(share.clone())
+    });
+
+    if save_result.is_err() && password_change.is_some() {
+        let _ = credentials::replace_password(&id, previous_password.as_deref());
+    }
+
+    save_result
+}
+
+#[tauri::command]
+pub(crate) fn delete_share(store: State<'_, Store>, id: String) -> Result<(), String> {
+    let previous_password = credentials::get_password(&id)?;
+    credentials::replace_password(&id, None)?;
+
+    let delete_result = store.update(|shares, _| {
+        let index = shares
+            .iter()
+            .position(|share| share.id == id)
+            .ok_or_else(|| MISSING_SHARE.to_owned())?;
+        shares.remove(index);
+        Ok(())
+    });
+
+    if delete_result.is_err() {
+        let _ = credentials::replace_password(&id, previous_password.as_deref());
+    }
+
+    delete_result
+}
+
+#[tauri::command]
+pub(crate) async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
+    let selected = app
+        .dialog()
+        .file()
+        .set_title("Choose a folder to share")
+        .blocking_pick_folder();
+
+    selected
+        .map(|path| {
+            path.into_path()
+                .map_err(|_| {
+                    "Porta couldn't read that folder path. Pick the folder again.".to_owned()
+                })
+                .and_then(path_to_string)
+        })
+        .transpose()
+}
+
+#[tauri::command]
+pub(crate) fn reveal_in_finder(app: AppHandle, path: String) -> Result<(), String> {
+    let path = PathBuf::from(path);
+    if !path.exists() {
+        return Err(FOLDER_MISSING.to_owned());
+    }
+
+    app.opener().reveal_item_in_dir(path).map_err(|_| {
+        "Porta couldn't open Finder. Open the folder from Finder and try again.".to_owned()
+    })
+}
+
+#[tauri::command]
+pub(crate) fn open_url(app: AppHandle, url: String) -> Result<(), String> {
+    let parsed = Url::parse(&url)
+        .map_err(|_| "This link is invalid. Restart the share to get a new link.".to_owned())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(
+            "This link can't be opened safely. Restart the share to get a new link.".to_owned(),
+        );
+    }
+
+    app.opener().open_url(url, None::<&str>).map_err(|_| {
+        "Porta couldn't open your browser. Copy the link and open it manually.".to_owned()
+    })
+}
+
+#[tauri::command]
+pub(crate) fn get_settings(store: State<'_, Store>) -> Result<Settings, String> {
+    store.read(|_, settings| settings.clone())
+}
+
+#[tauri::command]
+pub(crate) fn update_settings(
+    app: AppHandle,
+    store: State<'_, Store>,
+    patch: SettingsPatch,
+) -> Result<Settings, String> {
+    let previous = store.read(|_, settings| settings.clone())?;
+    let next = apply_settings_patch(&previous, &patch);
+
+    apply_setting_side_effects(&app, &previous, &next)?;
+    let save_result = store.update(|_, settings| {
+        *settings = next.clone();
+        Ok(next.clone())
+    });
+
+    if save_result.is_err() {
+        let _ = apply_setting_side_effects(&app, &next, &previous);
+    }
+
+    save_result
+}
+
+fn build_share(input: &CreateShareInput) -> Result<Share, String> {
+    let (path, port, default_name) = match input.kind {
+        ShareKind::Folder => {
+            let requested_path = input
+                .path
+                .as_deref()
+                .ok_or_else(|| "Choose a folder to share, then try again.".to_owned())?;
+            let canonical_path = Path::new(requested_path)
+                .canonicalize()
+                .map_err(|_| FOLDER_MISSING.to_owned())?;
+            if !canonical_path.is_dir() {
+                return Err("Choose a folder instead of a file, then try again.".to_owned());
+            }
+            let default_name = canonical_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("Shared Folder")
+                .to_owned();
+            (Some(path_to_string(canonical_path)?), None, default_name)
+        }
+        ShareKind::Port => {
+            let port = input
+                .port
+                .filter(|port| *port > 0)
+                .ok_or_else(|| "Enter a port from 1 to 65535, then try again.".to_owned())?;
+            (None, Some(port), format!("Port {port}"))
+        }
+    };
+
+    let name = normalized_name(input.name.as_deref(), &default_name)?;
+    validate_password(input.password.as_deref())?;
+
+    Ok(Share {
+        id: Uuid::new_v4().to_string(),
+        kind: input.kind,
+        name,
+        path,
+        port,
+        url: None,
+        status: ShareStatus::Stopped,
+        error: None,
+        password_protected: input.password.is_some(),
+        show_listing: input.show_listing.unwrap_or(true),
+        allow_uploads: input.allow_uploads.unwrap_or(false),
+        auto_start: input.auto_start.unwrap_or(false),
+        stats: ShareStats::default(),
+        created_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+    })
+}
+
+fn apply_share_patch(share: &mut Share, patch: &UpdateShareInput) -> Result<(), String> {
+    if let Some(name) = patch.name.as_deref() {
+        share.name = normalized_name(Some(name), &share.name)?;
+    }
+    if let Some(password) = patch.password.as_ref() {
+        share.password_protected = password.is_some();
+    }
+    if let Some(show_listing) = patch.show_listing {
+        share.show_listing = show_listing;
+    }
+    if let Some(allow_uploads) = patch.allow_uploads {
+        share.allow_uploads = allow_uploads;
+    }
+    if let Some(auto_start) = patch.auto_start {
+        share.auto_start = auto_start;
+    }
+    Ok(())
+}
+
+fn normalized_name(requested: Option<&str>, fallback: &str) -> Result<String, String> {
+    let name = requested.unwrap_or(fallback).trim();
+    if name.is_empty() {
+        return Err("Give this share a name, then try again.".to_owned());
+    }
+    Ok(name.to_owned())
+}
+
+fn validate_password(password: Option<&str>) -> Result<(), String> {
+    if password.is_some_and(str::is_empty) {
+        return Err(
+            "Choose a password or turn password protection off, then try again.".to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn path_to_string(path: PathBuf) -> Result<String, String> {
+    path.into_os_string().into_string().map_err(|_| {
+        "Porta can't use this folder name. Rename the folder in Finder, then try again.".to_owned()
+    })
+}
+
+fn apply_settings_patch(settings: &Settings, patch: &SettingsPatch) -> Settings {
+    Settings {
+        launch_at_login: patch.launch_at_login.unwrap_or(settings.launch_at_login),
+        auto_start_shares: patch
+            .auto_start_shares
+            .unwrap_or(settings.auto_start_shares),
+        show_dock_icon: patch.show_dock_icon.unwrap_or(settings.show_dock_icon),
+        notify_on_first_visitor: patch
+            .notify_on_first_visitor
+            .unwrap_or(settings.notify_on_first_visitor),
+        copy_url_on_start: patch
+            .copy_url_on_start
+            .unwrap_or(settings.copy_url_on_start),
+        theme: patch.theme.unwrap_or(settings.theme),
+    }
+}
+
+fn apply_setting_side_effects(
+    app: &AppHandle,
+    previous: &Settings,
+    next: &Settings,
+) -> Result<(), String> {
+    if previous.launch_at_login != next.launch_at_login {
+        let result = if next.launch_at_login {
+            app.autolaunch().enable()
+        } else {
+            app.autolaunch().disable()
+        };
+        result.map_err(|_| {
+            "Porta couldn't update Login Items. Open System Settings, then try again.".to_owned()
+        })?;
+    }
+
+    #[cfg(target_os = "macos")]
+    if previous.show_dock_icon != next.show_dock_icon {
+        let policy = if next.show_dock_icon {
+            tauri::ActivationPolicy::Regular
+        } else {
+            tauri::ActivationPolicy::Accessory
+        };
+        app.set_activation_policy(policy).map_err(|_| {
+            "Porta couldn't update the Dock icon. Quit and reopen Porta, then try again.".to_owned()
+        })?;
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::{apply_settings_patch, apply_share_patch, build_share};
+    use crate::{
+        settings::{Settings, SettingsPatch, Theme},
+        shares::{CreateShareInput, ShareKind, ShareStatus, UpdateShareInput},
+    };
+
+    #[test]
+    fn builds_and_patches_contract_shares_while_stopped() {
+        let folder = tempdir().expect("temporary folder should be created");
+        let input = CreateShareInput {
+            kind: ShareKind::Folder,
+            path: Some(folder.path().display().to_string()),
+            port: None,
+            name: Some("  Demo files  ".to_owned()),
+            password: Some("secret".to_owned()),
+            show_listing: None,
+            allow_uploads: None,
+            auto_start: Some(true),
+            start_now: Some(true),
+        };
+        let mut share = build_share(&input).expect("valid folder share should be built");
+
+        assert_eq!(share.status, ShareStatus::Stopped);
+        assert_eq!(share.name, "Demo files");
+        assert_eq!(
+            share.path.as_deref(),
+            folder
+                .path()
+                .canonicalize()
+                .ok()
+                .and_then(|path| path.to_str().map(str::to_owned))
+                .as_deref()
+        );
+        assert!(share.password_protected);
+        assert!(share.show_listing);
+        assert!(share.auto_start);
+
+        apply_share_patch(
+            &mut share,
+            &UpdateShareInput {
+                name: Some("Updated".to_owned()),
+                password: Some(None),
+                show_listing: Some(false),
+                allow_uploads: Some(true),
+                auto_start: Some(false),
+            },
+        )
+        .expect("valid patch should apply");
+
+        assert_eq!(share.name, "Updated");
+        assert!(!share.password_protected);
+        assert!(!share.show_listing);
+        assert!(share.allow_uploads);
+        assert!(!share.auto_start);
+    }
+
+    #[test]
+    fn settings_patch_changes_only_present_fields() {
+        let settings = Settings::default();
+        let next = apply_settings_patch(
+            &settings,
+            &SettingsPatch {
+                theme: Some(Theme::Dark),
+                notify_on_first_visitor: Some(false),
+                ..SettingsPatch::default()
+            },
+        );
+
+        assert_eq!(next.theme, Theme::Dark);
+        assert!(!next.notify_on_first_visitor);
+        assert_eq!(next.launch_at_login, settings.launch_at_login);
+        assert_eq!(next.auto_start_shares, settings.auto_start_shares);
+        assert_eq!(next.show_dock_icon, settings.show_dock_icon);
+        assert_eq!(next.copy_url_on_start, settings.copy_url_on_start);
+    }
+}
