@@ -229,8 +229,8 @@ fn cloudflared_args(origin: SocketAddr) -> Vec<String> {
     ]
 }
 
-fn spawn_cloudflared(
-    app: &AppHandle,
+fn spawn_cloudflared<R: Runtime>(
+    app: &AppHandle<R>,
     origin: SocketAddr,
 ) -> Result<(tauri::async_runtime::Receiver<CommandEvent>, CommandChild), String> {
     let command = app
@@ -246,8 +246,8 @@ fn retry_delay(consecutive_failures: u8) -> Duration {
     Duration::from_secs((1_u64 << exponent).min(MAX_BACKOFF_SECONDS))
 }
 
-async fn supervise_tunnel(
-    app: AppHandle,
+async fn supervise_tunnel<R: Runtime>(
+    app: AppHandle<R>,
     share_id: String,
     generation: u64,
     origin: SocketAddr,
@@ -344,7 +344,7 @@ async fn stop_managed_child(manager: &TunnelManager, share_id: &str, generation:
     true
 }
 
-async fn mark_unstable(app: &AppHandle, share_id: &str, generation: u64) {
+async fn mark_unstable<R: Runtime>(app: &AppHandle<R>, share_id: &str, generation: u64) {
     if cleanup_session(app, share_id, generation).await {
         let _ = transition_share(
             app,
@@ -356,7 +356,7 @@ async fn mark_unstable(app: &AppHandle, share_id: &str, generation: u64) {
     }
 }
 
-async fn cleanup_session(app: &AppHandle, share_id: &str, generation: u64) -> bool {
+async fn cleanup_session<R: Runtime>(app: &AppHandle<R>, share_id: &str, generation: u64) -> bool {
     let manager = app.state::<TunnelManager>();
     if let Some(session) = manager.take_session(share_id, generation).await {
         let _ = shutdown_session(session).await;
@@ -528,8 +528,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        cloudflared_args, retry_delay, send_signal, transition_share, wait_for_process_end,
-        wait_for_process_exit, wait_for_tunnel_url, RetryState, UNSTABLE_TUNNEL_ERROR, URL_TIMEOUT,
+        cloudflared_args, retry_delay, send_signal, supervise_tunnel, transition_share,
+        wait_for_process_end, wait_for_process_exit, wait_for_tunnel_url, RetryState,
+        CLOUDFLARE_ERROR, UNSTABLE_TUNNEL_ERROR, URL_TIMEOUT,
     };
     use crate::{
         server::{FileServer, FileServerConfig},
@@ -610,6 +611,106 @@ mod tests {
             UNSTABLE_TUNNEL_ERROR,
             "The tunnel keeps dropping. Porta will retry when you toggle it back on."
         );
+    }
+
+    #[tokio::test]
+    async fn unreachable_tunnel_persists_the_exact_actionable_error_and_cleans_up() {
+        let (idle_sender, mut idle_receiver) = tauri::async_runtime::channel(1);
+        assert_eq!(
+            wait_for_tunnel_url(&mut idle_receiver, Duration::from_millis(10)).await,
+            Err(
+                "Couldn't reach Cloudflare — check your internet connection and try again."
+                    .to_owned()
+            )
+        );
+        drop(idle_sender);
+        assert_eq!(
+            CLOUDFLARE_ERROR,
+            "Couldn't reach Cloudflare — check your internet connection and try again."
+        );
+
+        let data_dir = tempdir().expect("temporary store should be created");
+        let root = tempdir().expect("temporary share should be created");
+        let store = Store::load_from_dir(data_dir.path()).expect("test store should load");
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/ipc_contract.json"))
+                .expect("fixture should contain JSON");
+        let mut share: crate::shares::Share = serde_json::from_value(fixture["share"].clone())
+            .expect("fixture share should deserialize");
+        share.path = Some(root.path().to_string_lossy().into_owned());
+        share.status = ShareStatus::Starting;
+        share.url = None;
+        share.error = None;
+        share.password_protected = false;
+        let share_id = share.id.clone();
+        store
+            .update(|shares, _| {
+                shares.push(share);
+                Ok(())
+            })
+            .expect("starting share should persist");
+
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_shell::init())
+            .manage(store)
+            .manage(super::TunnelManager::default())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app should build");
+        let (_child_receiver, child) = app
+            .shell()
+            .command("sleep")
+            .arg("30")
+            .spawn()
+            .expect("managed child should start");
+        let pid = child.pid();
+        let server = FileServer::start(FileServerConfig::new(root.path(), "Offline test"))
+            .await
+            .expect("local server should start");
+        let origin = server.address();
+        app.state::<super::TunnelManager>()
+            .state
+            .lock()
+            .await
+            .sessions
+            .insert(
+                share_id.clone(),
+                super::TunnelSession {
+                    generation: 1,
+                    server,
+                    child: Some(child),
+                },
+            );
+        let (event_sender, event_receiver) = tauri::async_runtime::channel(1);
+        event_sender
+            .send(CommandEvent::Error("network unavailable".to_owned()))
+            .await
+            .expect("failure event should send");
+        drop(event_sender);
+
+        supervise_tunnel(
+            app.handle().clone(),
+            share_id.clone(),
+            1,
+            origin,
+            event_receiver,
+        )
+        .await;
+
+        let stored = app
+            .state::<Store>()
+            .read(|shares, _| shares[0].clone())
+            .expect("failed share should remain readable");
+        assert_eq!(stored.status, ShareStatus::Error);
+        assert_eq!(stored.url, None);
+        assert_eq!(stored.error.as_deref(), Some(CLOUDFLARE_ERROR));
+        assert!(!super::process_is_running(pid));
+        assert!(app
+            .state::<super::TunnelManager>()
+            .state
+            .lock()
+            .await
+            .sessions
+            .is_empty());
     }
 
     #[tokio::test]
